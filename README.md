@@ -1,6 +1,5 @@
-Tamamdır, isteğiniz üzerine 4 görseli de kullanarak ve tek bir kopyalanabilir kod bloğu içinde README dosyasını hazırladım. Görsel yollarını `images/` klasörüne göre güncelledim.
+Tamamdır, isteğiniz üzerine 4 görseli de kullanarak ve tek bir kopyalanabilir kod bloğu içinde README dosyasını hazırladım. Görsel yollarını images/ klasörüne göre güncelledim.
 
-```markdown
 # Görsel-Ataletsel Odometri İçin Uyarlanabilir Kovaryans ve Kuaterniyon Odaklı Hibrit Hata Durumlu EKF/UKF Yaklaşımı
 
 Bu proje, İnsansız Hava Araçları (İHA) gibi otonom platformların zorlu ve dinamik ortamlarda konum kestirim performansını artırmayı hedefleyen, uyarlanabilir kovaryans güncelleme mekanizmasına sahip yenilikçi bir hibrit Görsel-Ataletsel Odometri (VIO) yaklaşımını sunmaktadır. Sistem, gevşek bağlı (loosely-coupled) bir sensör füzyon mimarisi üzerine kuruludur.
@@ -40,10 +39,127 @@ Sistem temel olarak şu modüllerden oluşur:
 
 ### 1. Durum ve Hata Temsili
 Sistem, bir nominal durum ($\hat{\mathbf{x}}$) ve bu nominal durumdan küçük sapmaları ifade eden bir hata durumu ($\delta\mathbf{x}$) kullanarak durumu modeller:
-```
-$\hat{\mathbf{x}} = [\hat{\mathbf{q}}^T, \hat{\mathbf{v}}^T, \hat{\mathbf{p}}^T, \hat{\mathbf{b}}_{a}^T, \hat{\mathbf{b}}_{g}^T]^T \in \mathbb{R}^{16}$
-$\delta\mathbf{x} = [\delta\boldsymbol{\theta}^T, \delta\mathbf{v}^T, \delta\mathbf{p}^T, \delta\mathbf{b}_{a}^T, \delta\mathbf{b}_{g}^T]^T \in \mathbb{R}^{15}$
-```
+
+
+𝑥
+^
+=
+[
+𝑞
+^
+𝑇
+,
+𝑣
+^
+𝑇
+,
+𝑝
+^
+𝑇
+,
+𝑏
+^
+𝑎
+𝑇
+,
+𝑏
+^
+𝑔
+𝑇
+]
+𝑇
+∈
+𝑅
+16
+x
+^
+=[
+q
+^
+	​
+
+T
+,
+v
+^
+T
+,
+p
+^
+	​
+
+T
+,
+b
+^
+a
+T
+	​
+
+,
+b
+^
+g
+T
+	​
+
+]
+T
+∈R
+16
+
+
+𝛿
+𝑥
+=
+[
+𝛿
+𝜃
+𝑇
+,
+𝛿
+𝑣
+𝑇
+,
+𝛿
+𝑝
+𝑇
+,
+𝛿
+𝑏
+𝑎
+𝑇
+,
+𝛿
+𝑏
+𝑔
+𝑇
+]
+𝑇
+∈
+𝑅
+15
+δx=[δθ
+T
+,δv
+T
+,δp
+T
+,δb
+a
+T
+	​
+
+,δb
+g
+T
+	​
+
+]
+T
+∈R
+15
+
 burada $\hat{\mathbf{q}}$ yönelim kuaterniyonu, $\hat{\mathbf{p}}$ konum, $\hat{\mathbf{v}}$ hız, $\hat{\mathbf{b}}_{a}$ ivmeölçer sapması, $\hat{\mathbf{b}}_{g}$ jiroskop sapması ve $\delta\boldsymbol{\theta}$ yönelim hatasıdır.
 
 ### 2. Sistem Dinamikleri ve Ayrıklaştırma
@@ -187,36 +303,50 @@ Ana betik `main.py` üzerinden çalıştırılır. Çeşitli parametreler komut 
 Adaptif mekanizmayı varsayılan parametrelerle çalıştırmak için:
 ```bash
 python main.py --adaptive
-```
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+IGNORE_WHEN_COPYING_END
 
 Belirli parametreleri ayarlayarak çalıştırmak için:
-```bash
+
 python main.py --adaptive --alpha_v 4.5 --epsilon_v 2.2 --s 3.2 --w_thr 0.3
-```
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bash
+IGNORE_WHEN_COPYING_END
 
-Betik, `MH01`'den `MH05`'e kadar olan sekansları `concurrent.futures.ProcessPoolExecutor` kullanarak paralel olarak işleyecektir. Sonuçlar `outputs/` klasörüne ve genel bir özet `results.csv` (veya `SAVE_RESULTS_CSV_NAME` ile belirtilen) dosyasına kaydedilecektir.
+Betik, MH01'den MH05'e kadar olan sekansları concurrent.futures.ProcessPoolExecutor kullanarak paralel olarak işleyecektir. Sonuçlar outputs/ klasörüne ve genel bir özet results.csv (veya SAVE_RESULTS_CSV_NAME ile belirtilen) dosyasına kaydedilecektir.
 
-## 📈 Sonuçlar (Özet)
+📈 Sonuçlar (Özet)
 
 Önerilen adaptif hibrit Qf-ES-EKF/UKF yaklaşımı, EuRoC MAV veri setinde yapılan kapsamlı deneylerde standart ESKF ve diğer yöntemlere kıyasla belirgin performans iyileştirmeleri göstermiştir.
-*   **Konum Kestirimi (ATE):** Özellikle zorlu MH04 ve MH05 sekanslarında %40'a varan iyileşme.
-*   **Yönelim Kestirimi (Quaternion RMSE):** ESKF tabanlı yöntemlere göre %60'a varan daha iyi sonuçlar.
-*   **Hesaplama Verimliliği:** Hibrit filtre, tam SUKF uygulamasına göre yaklaşık %47 daha hızlı çalışırken, ESKF'ye kıyasla makul bir ek yük getirmektedir.
 
-Detaylı sayısal sonuçlar ve karşılaştırmalar için lütfen makaleye (Tablo 3, 4, 5) ve kod ile üretilen `outputs/` klasöründeki CSV dosyalarına bakınız. Makaledeki Şekil 7'de örnek yörünge karşılaştırmaları bulunmaktadır.
+Konum Kestirimi (ATE): Özellikle zorlu MH04 ve MH05 sekanslarında %40'a varan iyileşme.
 
-## 💡 Gelecek Çalışmalar
+Yönelim Kestirimi (Quaternion RMSE): ESKF tabanlı yöntemlere göre %60'a varan daha iyi sonuçlar.
 
-*   **Parçacık Filtresi (Particle Filter) için Uyarlanabilir Parçacık Sayısı Optimizasyonu:** Görüntü kalitesine bağlı olarak parçacık sayısını dinamik olarak ayarlama.
-*   **Çoklu Sensör Füzyonu için Genişletilmiş Güven Metriği:** LiDAR, GPS, 5G gibi ek sensörleri dahil etme.
-*   **Derin Öğrenme Tabanlı Güven Tahmini:** Görüntü kalitesi ve bilgi içeriği değerlendirmesi için derin öğrenme modelleri kullanma.
-*   **Gerçek Zamanlı Uygulama Optimizasyonu:** Algoritma optimizasyonları ve paralel işleme teknikleri ile hesaplama verimliliğini artırma.
+Hesaplama Verimliliği: Hibrit filtre, tam SUKF uygulamasına göre yaklaşık %47 daha hızlı çalışırken, ESKF'ye kıyasla makul bir ek yük getirmektedir.
 
-## 📄 Atıf
+Detaylı sayısal sonuçlar ve karşılaştırmalar için lütfen makaleye (Tablo 3, 4, 5) ve kod ile üretilen outputs/ klasöründeki CSV dosyalarına bakınız. Makaledeki Şekil 7'de örnek yörünge karşılaştırmaları bulunmaktadır.
+
+💡 Gelecek Çalışmalar
+
+Parçacık Filtresi (Particle Filter) için Uyarlanabilir Parçacık Sayısı Optimizasyonu: Görüntü kalitesine bağlı olarak parçacık sayısını dinamik olarak ayarlama.
+
+Çoklu Sensör Füzyonu için Genişletilmiş Güven Metriği: LiDAR, GPS, 5G gibi ek sensörleri dahil etme.
+
+Derin Öğrenme Tabanlı Güven Tahmini: Görüntü kalitesi ve bilgi içeriği değerlendirmesi için derin öğrenme modelleri kullanma.
+
+Gerçek Zamanlı Uygulama Optimizasyonu: Algoritma optimizasyonları ve paralel işleme teknikleri ile hesaplama verimliliğini artırma.
+
+📄 Atıf
 
 Bu çalışmayı veya kodu kullanırsanız, lütfen aşağıdaki şekilde (veya yayınlandığında makaleyi) referans gösterin:
 
-```bibtex
 @article{AsilNasibovVIO2024,
   author    = {Ufuk Asil and Efendi Nasibov},
   title     = {Görsel-Ataletsel Odometri İçin Uyarlanabilir Kovaryans ve Kuaterniyon Odaklı Hibrit Hata Durumlu EKF/UKF Yaklaşımı},
@@ -225,16 +355,26 @@ Bu çalışmayı veya kodu kullanırsanız, lütfen aşağıdaki şekilde (veya 
   note      = {Kod adresi: https://github.com/ufukasia/Ufuk-ASIL-prepaper-code.git}
 }
 % Yayınlandığında bu BibTeX girdisini güncelleyiniz.
-```
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Bibtex
+IGNORE_WHEN_COPYING_END
+📝 Lisans
 
-## 📝 Lisans
+Bu proje MIT Lisansı altında lisanslanmıştır. (Projenize bir LISANS dosyası ekleyiniz.)
 
-Bu proje [MIT Lisansı](LICENSE) altında lisanslanmıştır. (Projenize bir LISANS dosyası ekleyiniz.)
+📧 İletişim
 
-## 📧 İletişim
+Ufuk Asil: u.asil@ogr.deu.edu.tr
 
-*   Ufuk Asil: `u.asil@ogr.deu.edu.tr`
-*   Efendi Nasibov: `efendi.nasibov@deu.edu.tr`
+Efendi Nasibov: efendi.nasibov@deu.edu.tr
 
 Dokuz Eylül Üniversitesi, Bilgisayar Bilimleri Bölümü
-```
+
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+IGNORE_WHEN_COPYING_END
