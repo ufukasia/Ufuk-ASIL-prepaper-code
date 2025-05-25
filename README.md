@@ -1,4 +1,4 @@
-Harika bir çalışma! Hem makaleniz hem de kodunuz oldukça detaylı. GitHub için kapsamlı bir README dosyası oluşturalım. Markdown formatında olacak ve belirttiğiniz gibi görseller için yer tutucular içerecektir. Bu görselleri projenizin `assets` veya `docs/images` gibi bir klasörüne ekleyip README dosyasındaki yolları güncellemeniz gerekecek.
+Tamamdır, isteğiniz üzerine 4 görseli de kullanarak ve tek bir kopyalanabilir kod bloğu içinde README dosyasını hazırladım. Görsel yollarını `images/` klasörüne göre güncelledim.
 
 ```markdown
 # Görsel-Ataletsel Odometri İçin Uyarlanabilir Kovaryans ve Kuaterniyon Odaklı Hibrit Hata Durumlu EKF/UKF Yaklaşımı
@@ -20,8 +20,8 @@ Otonom sistemlerin, özellikle GNSS sinyallerinin zayıf veya erişilemez olduğ
 
 Önerilen VIO sisteminin genel mimarisi ve temel bileşenleri arasındaki etkileşim aşağıdaki blok diyagramında gösterilmiştir:
 
-![Sistem Blok Diyagramı](assets/diagram.png)
-*(Not: `assets/diagram.png` yolunu kendi sistem diyagramı resminizin yolu ile güncelleyiniz. Makalenizdeki Şekil 1'i kullanabilirsiniz.)*
+![Sistem Blok Diyagramı](images/diagram.png)
+*(Makaledeki Şekil 1)*
 
 Sistem temel olarak şu modüllerden oluşur:
 1.  **Ataletsel Navigasyon (Qf-ES-EKF/UKF):** IMU ölçümlerini (ivme ve açısal hız) işleyerek durum yayılımını gerçekleştirir.
@@ -62,17 +62,31 @@ Bu yaklaşım, `ErrorStateKalmanFilterVIO_Hybrid` sınıfında uygulanmıştır.
 Görsel ölçümlerin (pozisyon $\mathbf{p}_{\mathrm{vis}}$ ve hız $\mathbf{v}_{\mathrm{vis}}$) filtreye entegrasyonunda, ölçüm gürültüsü kovaryansı $\mathbf{R}_{\scriptscriptstyle\mathrm{VIS}}$ dinamik olarak ayarlanır.
 
 *   **Görsel Veri Kalite Analizi:**
-    *   **Statik Metrikler ($\theta_p$ için):** Terslenmiş Shannon entropisi ($1 - \text{entropy}_{\mathcal{N}}$), hareket bulanıklığı ($\text{blur}_{\mathcal{N}}$), poz optimizasyon ki-kare hatası ($\chi^2_{\text{pose}_\mathcal{N}}$), elenen anahtar kare sayısı ($\text{keyf}^{\text{c}}_{\mathcal{N}}$).
-    *   **Dinamik Metrikler ($\theta_v$ için):** Ardışık kareler arası normalize edilmiş yoğunluk değişimi ($\Delta\text{intensity}_{\mathcal{N}}$), bulanıklık değişimi ($\Delta\text{blur}_{\mathcal{N}}$), ki-kare hatası değişimi ($\Delta\chi^2_{\text{pose}_\mathcal{N}}$), elenen anahtar kare sayısındaki değişim ($\Delta\text{keyf}^{\text{c}}_{\mathcal{N}}$).
-    Bu metrikler `cov_sigma_p.py` ve `cov_sigma_v.py` dosyalarındaki `compute_adaptive_sigma_p` ve `compute_adaptive_sigma_v` fonksiyonları içinde hesaplanır.
+    Görsel odometri sistemlerinin başarımını etkileyen başlıca faktörler olan ani ışık değişimleri, düşük desen yoğunluğu ve hızlı kamera hareketleri gibi zorlukların tespiti için çeşitli metrikler kullanılır. Makalede Denklem (14)'te detaylandırılan bu metrikler şunlardır:
+    *   **Statik Metrikler ($\theta_p$ için):** Görüntünün genel kalitesini yansıtır. Örnekler:
+        *   Terslenmiş Shannon entropisi ($1 - {\text{entropy}}_{\mathcal{N}}$): Düşük entropi (yüksek $1 - {\text{entropy}}_{\mathcal{N}}$ değeri), düşük doku veya bilgi içeriği anlamına gelir.
+        *   Hareket bulanıklığı ($\text{blur}_{\mathcal{N}}$): Laplace varyansı gibi yöntemlerle ölçülür.
+        *   Poz optimizasyon ki-kare hatası (${\chi^2_{\text{pose}}}_{\mathcal{N}}$): Görsel odometri optimizasyonunun kalitesini gösterir.
+        *   Elenen anahtar kare sayısı (${{keyf}^{\text{c}}_{\mathcal{N}}}$): İzleme kaybı veya harita tutarsızlığına işaret edebilir.
+    *   **Dinamik Metrikler ($\theta_v$ için):** Ardışık kareler arasındaki değişimleri yansıtır. Örnekler:
+        *   Normalize edilmiş yoğunluk değişimi ($\Delta{{\text{intensity}}_{\mathcal{N}}}$): Ani aydınlatma değişikliklerini yakalar.
+        *   Normalize edilmiş bulanıklık değişimi ($\Delta{{\text{blur}}_{\mathcal{N}}}$).
+        *   Normalize edilmiş ki-kare hatası değişimi ($\Delta{{\chi^2_{\text{pose}}}_{\mathcal{N}}}$).
+        *   Normalize edilmiş elenen anahtar kare sayısındaki değişim ($\Delta{{keyf}^{\text{c}}_{\mathcal{N}}}$).
+
+    Aşağıdaki görsel, EuRoC MAV veri setindeki farklı metrikler için uç değerlere sahip sahneleri göstermektedir, bu da metriklerin çeşitli zorlu koşulları nasıl yakaladığını örneklendirir:
+    ![Maksimum Metrik Değerlerine Sahip Sahneler](images/information_fotos.png)
+    *(Makaledeki Şekil 4)*
+
+    Bu metrikler `cov_sigma_p.py` ve `cov_sigma_v.py` dosyalarındaki `compute_adaptive_sigma_p` ve `compute_adaptive_sigma_v` fonksiyonları içinde hesaplanır ve normalize edilir.
 
 *   **Güven Skoru ve CASEF Aktivasyon Fonksiyonu:**
-    Hesaplanan normalize edilmiş metriklerin maksimumu alınarak birleştirilir ve ardından CASEF fonksiyonuna beslenir:
+    Hesaplanan normalize edilmiş metriklerin (ağırlıklandırılmış) maksimumu alınarak birleştirilir ve ardından CASEF fonksiyonuna beslenir:
     $\text{CASEF}(x; s) = \frac{\exp(s \cdot \text{clip}(x, 0.0, 1.0)) - 1}{\exp(s) - 1}$
     Bu fonksiyon, $s$ parametresi ile ayarlanabilen bir doygunluk karakteristiği sunar.
 
-    ![CASEF Aktivasyon Fonksiyonu](assets/activation_functions.png)
-    *(Not: `assets/activation_functions.png` yolunu kendi aktivasyon fonksiyonu grafiğinizin yolu ile güncelleyiniz. Makalenizdeki Şekil 5'i kullanabilirsiniz.)*
+    ![CASEF Aktivasyon Fonksiyonu](images/activation_functions.png)
+    *(Makaledeki Şekil 5)*
 
     Elde edilen $\theta_p$ ve $\theta_v$ skorları, `config['w_thr']` (ağırlıklandırma eşiği) ve `config['d_thr']` (kesme eşiği) kullanılarak nihai güven değerine dönüştürülür. Bu değerler, $\sigma_p$ ve $\sigma_v$ kovaryanslarını `MIN_COV` ve `MAX_COV` aralığında ölçekler.
 
@@ -91,7 +105,7 @@ Kod, harici bir görsel odometri (VO) sisteminden gelen poz ve hız ölçümleri
     numpy
     pandas
     scipy
-    opencv-python 
+    opencv-python
     # Muhtemelen matplotlib (görselleştirme için)
     ```
     Kurulum:
@@ -101,7 +115,7 @@ Kod, harici bir görsel odometri (VO) sisteminden gelen poz ve hız ölçümleri
     # pip install numpy pandas scipy opencv-python
     ```
 
-## 📊 Veri Seti
+## 📊 Veri Seti ve Değerlendirme Senaryoları
 
 Bu proje, performans değerlendirmesi için **EuRoC MAV** veri setini kullanır.
 *   Veri setini [buradan](https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets) indirebilirsiniz.
@@ -112,6 +126,11 @@ Bu proje, performans değerlendirmesi için **EuRoC MAV** veri setini kullanır.
     ├── main.py                 # Ana betik
     ├── cov_sigma_p.py          # Adaptif sigma_p hesaplama modülü
     ├── cov_sigma_v.py          # Adaptif sigma_v hesaplama modülü
+    ├── images/                 # README görselleri
+    │   ├── activation_functions.png
+    │   ├── diagram.png
+    │   ├── information_fotos.png
+    │   └── Matrix.png
     ├── imu_interp_gt/          # İşlenmiş IMU ve yer gerçeği verileri
     │   ├── MH01_imu_with_interpolated_groundtruth.csv
     │   ├── ...
@@ -125,9 +144,16 @@ Bu proje, performans değerlendirmesi için **EuRoC MAV** veri setini kullanır.
     └── README.md
     ```
 
+EuRoC MAV veri setinin Machine Hall (MH) sekansları, özellikle MH04 ve MH05, hızlı hareketler ve zorlu aydınlatma koşulları içerir. Bu zorlu senaryolarda görsel odometri metriklerinin ve sistem performansının (ATE gibi) birbiriyle olan ilişkisi önemlidir. Aşağıdaki korelasyon matrisi, bu ilişkilerden bazılarını göstermektedir:
+
+![Metrik Korelasyon Matrisi](images/Matrix.png)
+*(Makaledeki Şekil 2)*
+
+Bu matris, örneğin, ATE ile poz optimizasyonundaki Ki-Kare hatası ($\chi^2_{\text{pose}}$) ve elenen anahtar kare sayısı gibi metrikler arasında anlamlı korelasyonlar olduğunu göstermektedir. Bu tür analizler, adaptif kovaryans mekanizmasında hangi metriklerin daha etkili olabileceğine dair ipuçları verir.
+
 ## 🚀 Kullanım
 
-Ana betik `main.py` (veya eşdeğeri) üzerinden çalıştırılır. Çeşitli parametreler komut satırından ayarlanabilir.
+Ana betik `main.py` üzerinden çalıştırılır. Çeşitli parametreler komut satırından ayarlanabilir.
 
 ### Parametreler
 
@@ -177,11 +203,7 @@ Betik, `MH01`'den `MH05`'e kadar olan sekansları `concurrent.futures.ProcessPoo
 *   **Yönelim Kestirimi (Quaternion RMSE):** ESKF tabanlı yöntemlere göre %60'a varan daha iyi sonuçlar.
 *   **Hesaplama Verimliliği:** Hibrit filtre, tam SUKF uygulamasına göre yaklaşık %47 daha hızlı çalışırken, ESKF'ye kıyasla makul bir ek yük getirmektedir.
 
-Detaylı sayısal sonuçlar ve karşılaştırmalar için lütfen makaleye (Tablo 3, 4, 5) ve kod ile üretilen `outputs/` klasöründeki CSV dosyalarına bakınız.
-
-Örnek bir yörünge karşılaştırması (Makale Şekil 7'den uyarlanabilir):
-![Trajectory Comparison](assets/trajectory_comparison.png)
-*(Not: `assets/trajectory_comparison.png` yolunu kendi yörünge karşılaştırma grafiğinizin yolu ile güncelleyiniz.)*
+Detaylı sayısal sonuçlar ve karşılaştırmalar için lütfen makaleye (Tablo 3, 4, 5) ve kod ile üretilen `outputs/` klasöründeki CSV dosyalarına bakınız. Makaledeki Şekil 7'de örnek yörünge karşılaştırmaları bulunmaktadır.
 
 ## 💡 Gelecek Çalışmalar
 
@@ -215,18 +237,4 @@ Bu proje [MIT Lisansı](LICENSE) altında lisanslanmıştır. (Projenize bir LIS
 *   Efendi Nasibov: `efendi.nasibov@deu.edu.tr`
 
 Dokuz Eylül Üniversitesi, Bilgisayar Bilimleri Bölümü
-
----
-
-Bu README dosyasını projenizin kök dizinine `README.md` olarak kaydedin. `assets/` klasörünü oluşturup ilgili görselleri (diagram.png, activation_functions.png, trajectory_comparison.png) bu klasöre eklemeyi unutmayın.
 ```
-
-**Önemli Notlar:**
-1.  **Görsel Dosyaları:** `assets/diagram.png`, `assets/activation_functions.png` ve `assets/trajectory_comparison.png` gibi yer tutucular kullandım. Bu dosyaları makalenizden alıp projenizde uygun bir `assets` (veya benzeri) klasörüne koyup yollarını README içinde güncellemelisiniz.
-2.  **Makale Linki:** `[Görsel-Ataletsel Odometri İçin Uyarlanabilir Kovaryans ve Kuaterniyon Odaklı Hibrit Hata Durumlu EKF/UKF Yaklaşımı](httpsTBD_Link_To_Your_Paper_Here_If_Published_Else_Remove)` kısmını makaleniz yayınlandığında (örneğin arXiv, IEEE Xplore linki) güncelleyin.
-3.  **GitHub Repo Linki:** Makalede belirtilen `https://github.com/ufukasia/Ufuk-ASIL-prepaper-code.git` linkini kullandım. Eğer bu README başka bir repo içinse, linki uygun şekilde değiştirin.
-4.  **`requirements.txt`:** Kodunuzun bağımlılıklarını içeren bir `requirements.txt` dosyası oluşturmanız, kullanıcıların kurulum yapmasını kolaylaştıracaktır.
-5.  **LISANS:** Projenize bir `LICENSE` dosyası (örneğin, MIT lisansı metnini içeren `LICENSE.txt` veya `LICENSE.md`) eklemeniz iyi bir pratiktir.
-6.  **Dil:** README'yi tamamen Türkçe tuttuk, isteğiniz doğrultusunda.
-
-Bu README, projenizi GitHub'da sunmak için iyi bir başlangıç noktası olacaktır. Başarılar dilerim!
