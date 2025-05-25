@@ -1,5 +1,3 @@
-Tamamdır, isteğiniz üzerine 4 görseli de kullanarak ve tek bir kopyalanabilir kod bloğu içinde README dosyasını hazırladım. Görsel yollarını images/ klasörüne göre güncelledim.
-
 # Görsel-Ataletsel Odometri İçin Uyarlanabilir Kovaryans ve Kuaterniyon Odaklı Hibrit Hata Durumlu EKF/UKF Yaklaşımı
 
 Bu proje, İnsansız Hava Araçları (İHA) gibi otonom platformların zorlu ve dinamik ortamlarda konum kestirim performansını artırmayı hedefleyen, uyarlanabilir kovaryans güncelleme mekanizmasına sahip yenilikçi bir hibrit Görsel-Ataletsel Odometri (VIO) yaklaşımını sunmaktadır. Sistem, gevşek bağlı (loosely-coupled) bir sensör füzyon mimarisi üzerine kuruludur.
@@ -39,156 +37,37 @@ Sistem temel olarak şu modüllerden oluşur:
 
 ### 1. Durum ve Hata Temsili
 Sistem, bir nominal durum ($\hat{\mathbf{x}}$) ve bu nominal durumdan küçük sapmaları ifade eden bir hata durumu ($\delta\mathbf{x}$) kullanarak durumu modeller:
+$$ \hat{\mathbf{x}} = [\hat{\mathbf{q}}^T, \hat{\mathbf{v}}^T, \hat{\mathbf{p}}^T, \hat{\mathbf{b}}_a^T, \hat{\mathbf{b}}_g^T]^T \in \mathbb{R}^{16} $$
+$$ \delta\mathbf{x} = [\delta\boldsymbol{\theta}^T, \delta\mathbf{v}^T, \delta\mathbf{p}^T, \delta\mathbf{b}_a^T, \delta\mathbf{b}_g^T]^T \in \mathbb{R}^{15} $$
 
-
-𝑥
-^
-=
-[
-𝑞
-^
-𝑇
-,
-𝑣
-^
-𝑇
-,
-𝑝
-^
-𝑇
-,
-𝑏
-^
-𝑎
-𝑇
-,
-𝑏
-^
-𝑔
-𝑇
-]
-𝑇
-∈
-𝑅
-16
-x
-^
-=[
-q
-^
-	​
-
-T
-,
-v
-^
-T
-,
-p
-^
-	​
-
-T
-,
-b
-^
-a
-T
-	​
-
-,
-b
-^
-g
-T
-	​
-
-]
-T
-∈R
-16
-
-
-𝛿
-𝑥
-=
-[
-𝛿
-𝜃
-𝑇
-,
-𝛿
-𝑣
-𝑇
-,
-𝛿
-𝑝
-𝑇
-,
-𝛿
-𝑏
-𝑎
-𝑇
-,
-𝛿
-𝑏
-𝑔
-𝑇
-]
-𝑇
-∈
-𝑅
-15
-δx=[δθ
-T
-,δv
-T
-,δp
-T
-,δb
-a
-T
-	​
-
-,δb
-g
-T
-	​
-
-]
-T
-∈R
-15
-
-burada $\hat{\mathbf{q}}$ yönelim kuaterniyonu, $\hat{\mathbf{p}}$ konum, $\hat{\mathbf{v}}$ hız, $\hat{\mathbf{b}}_{a}$ ivmeölçer sapması, $\hat{\mathbf{b}}_{g}$ jiroskop sapması ve $\delta\boldsymbol{\theta}$ yönelim hatasıdır.
+burada $\hat{\mathbf{q}}$ yönelim kuaterniyonu, $\hat{\mathbf{p}}$ konum, $\hat{\mathbf{v}}$ hız, $\hat{\mathbf{b}}_{a}$ ivmeölçer sapması, $\hat{\mathbf{b}}_{g}$ jiroskop sapması ve $\delta\boldsymbol{\theta}$ yönelim hatasıdır (3 boyutlu hata).
 
 ### 2. Sistem Dinamikleri ve Ayrıklaştırma
 Nominal durum dinamikleri standart IMU kinematiklerini takip eder. Hata durumu dinamikleri ise şu şekilde ifade edilir:
-$\dot{\delta\mathbf{x}} = \mathbf{A}\delta\mathbf{x} + \mathbf{G}\mathbf{n}$
+$$ \dot{\delta\mathbf{x}} = \mathbf{A}\delta\mathbf{x} + \mathbf{G}\mathbf{n} $$
 Bu sürekli zaman modeli, filtreleme adımlarında kullanılmak üzere Van Loan yöntemi ile ayrıklaştırılır.
 
 ### 3. Hibrit Qf-ES-EKF/UKF ile Durum Yayılımı
 Önerilen hibrit filtre, durum yayılımında iki aşamalı bir strateji izler:
 1.  **ESKF Tabanlı Ön Yayılım:** Tüm durum vektörü ve hata kovaryansı standart ESKF adımlarıyla yayılır.
 2.  **Yönelim Kovaryansının SUKF ile İyileştirilmesi:** ESKF ile yayılmış olan yönelim hatası kovaryans bloğu ($\mathbf{P}_{\theta\theta}$) üzerinde SUKF tabanlı bir iyileştirme uygulanır. Bu, sadece 3 boyutlu yönelim hatası ($\delta\boldsymbol{\theta}$) için sigma noktaları üretilerek ve bu noktalar IMU dinamikleriyle yayılarak gerçekleştirilir.
-
 Bu yaklaşım, `ErrorStateKalmanFilterVIO_Hybrid` sınıfında uygulanmıştır. `predict` metodu önce `super().predict()` (ESKF yayılımı) çağrısını yapar, ardından yönelim kovaryansını SUKF adımlarıyla ( `_sigma_points_theta_from_S` ve `_propagate_nominal` kullanarak) rafine eder.
 
 ### 4. Uyarlanabilir Ölçüm Güncelleme Mekanizması
-Görsel ölçümlerin (pozisyon $\mathbf{p}_{\mathrm{vis}}$ ve hız $\mathbf{v}_{\mathrm{vis}}$) filtreye entegrasyonunda, ölçüm gürültüsü kovaryansı $\mathbf{R}_{\scriptscriptstyle\mathrm{VIS}}$ dinamik olarak ayarlanır.
+Görsel ölçümlerin (pozisyon $\mathbf{p}_{\text{vis}}$ ve hız $\mathbf{v}_{\text{vis}}$) filtreye entegrasyonunda, ölçüm gürültüsü kovaryansı $\mathbf{R}_{\text{VIS}}$ dinamik olarak ayarlanır.
 
 *   **Görsel Veri Kalite Analizi:**
     Görsel odometri sistemlerinin başarımını etkileyen başlıca faktörler olan ani ışık değişimleri, düşük desen yoğunluğu ve hızlı kamera hareketleri gibi zorlukların tespiti için çeşitli metrikler kullanılır. Makalede Denklem (14)'te detaylandırılan bu metrikler şunlardır:
     *   **Statik Metrikler ($\theta_p$ için):** Görüntünün genel kalitesini yansıtır. Örnekler:
         *   Terslenmiş Shannon entropisi ($1 - {\text{entropy}}_{\mathcal{N}}$): Düşük entropi (yüksek $1 - {\text{entropy}}_{\mathcal{N}}$ değeri), düşük doku veya bilgi içeriği anlamına gelir.
         *   Hareket bulanıklığı ($\text{blur}_{\mathcal{N}}$): Laplace varyansı gibi yöntemlerle ölçülür.
-        *   Poz optimizasyon ki-kare hatası (${\chi^2_{\text{pose}}}_{\mathcal{N}}$): Görsel odometri optimizasyonunun kalitesini gösterir.
-        *   Elenen anahtar kare sayısı (${{keyf}^{\text{c}}_{\mathcal{N}}}$): İzleme kaybı veya harita tutarsızlığına işaret edebilir.
+        *   Poz optimizasyon ki-kare hatası ($\chi^2_{\text{pose},\mathcal{N}}$): Görsel odometri optimizasyonunun kalitesini gösterir.
+        *   Elenen anahtar kare sayısı ($\text{keyf}^{\text{c}}_{\mathcal{N}}$): İzleme kaybı veya harita tutarsızlığına işaret edebilir.
     *   **Dinamik Metrikler ($\theta_v$ için):** Ardışık kareler arasındaki değişimleri yansıtır. Örnekler:
-        *   Normalize edilmiş yoğunluk değişimi ($\Delta{{\text{intensity}}_{\mathcal{N}}}$): Ani aydınlatma değişikliklerini yakalar.
-        *   Normalize edilmiş bulanıklık değişimi ($\Delta{{\text{blur}}_{\mathcal{N}}}$).
-        *   Normalize edilmiş ki-kare hatası değişimi ($\Delta{{\chi^2_{\text{pose}}}_{\mathcal{N}}}$).
-        *   Normalize edilmiş elenen anahtar kare sayısındaki değişim ($\Delta{{keyf}^{\text{c}}_{\mathcal{N}}}$).
+        *   Normalize edilmiş yoğunluk değişimi ($\Delta\text{intensity}_{\mathcal{N}}$): Ani aydınlatma değişikliklerini yakalar.
+        *   Normalize edilmiş bulanıklık değişimi ($\Delta\text{blur}_{\mathcal{N}}$).
+        *   Normalize edilmiş ki-kare hatası değişimi ($\Delta\chi^2_{\text{pose},\mathcal{N}}$).
+        *   Normalize edilmiş elenen anahtar kare sayısındaki değişim ($\Delta\text{keyf}^{\text{c}}_{\mathcal{N}}$).
 
     Aşağıdaki görsel, EuRoC MAV veri setindeki farklı metrikler için uç değerlere sahip sahneleri göstermektedir, bu da metriklerin çeşitli zorlu koşulları nasıl yakaladığını örneklendirir:
     ![Maksimum Metrik Değerlerine Sahip Sahneler](images/information_fotos.png)
@@ -198,8 +77,9 @@ Görsel ölçümlerin (pozisyon $\mathbf{p}_{\mathrm{vis}}$ ve hız $\mathbf{v}_
 
 *   **Güven Skoru ve CASEF Aktivasyon Fonksiyonu:**
     Hesaplanan normalize edilmiş metriklerin (ağırlıklandırılmış) maksimumu alınarak birleştirilir ve ardından CASEF fonksiyonuna beslenir:
-    $\text{CASEF}(x; s) = \frac{\exp(s \cdot \text{clip}(x, 0.0, 1.0)) - 1}{\exp(s) - 1}$
+    $$ \text{CASEF}(x; s) = \frac{\exp(s \cdot \text{clip}(x, 0.0, 1.0)) - 1}{\exp(s) - 1} $$
     Bu fonksiyon, $s$ parametresi ile ayarlanabilen bir doygunluk karakteristiği sunar.
+
 
     ![CASEF Aktivasyon Fonksiyonu](images/activation_functions.png)
     *(Makaledeki Şekil 5)*
