@@ -1,4 +1,4 @@
-# Adaptive Hybrid ESKF/UKF for Visual-Inertial Odometry (VIO)
+# Loosely Coupled Adaptive Hybrid ESKF/UKF for Visual-Inertial Odometry (VIO)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
