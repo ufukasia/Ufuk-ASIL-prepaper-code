@@ -1717,7 +1717,7 @@ def run_sequence(seq_name, config, summary_file):
     imu_file_path = f"imu_interp_gt/{seq_name}_imu_with_interpolated_groundtruth.csv"
     sequence_number_str = seq_name[2:]  # Örnek: MH01 -> "01"
     # Convert to int to remove leading zero (e.g., "01" -> 1), then format into path
-    visual_file_path = f"vo_pred_super_best/mh{int(sequence_number_str)}_ns.csv"
+    visual_file_path = f"VO/vo_pred_super_best/mh{int(sequence_number_str)}_ns.csv"
 
     if args.adaptive:
         sigma_v_map = compute_adaptive_sigma_v(config, visual_file_path, seq_name)
