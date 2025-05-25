@@ -79,15 +79,7 @@ python main_esqf-sukf.py --adaptive \
 - **Result Metrics**: `results.csv`
 
 
-## 📜 Citation
-```bibtex
-@article{yourcitation,
-  title = {Your Paper Title},
-  author = {Your Name},
-  journal = {Journal Name},
-  year = {2025}
-}
-```
+
 
 
 ## 📧 Contact
