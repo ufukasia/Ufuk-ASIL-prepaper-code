@@ -15,17 +15,17 @@ A robust VIO solution combining Error-State Kalman Filter (ESKF) and Unscented K
   - ESKF for position/velocity/bias estimation (computational efficiency)
   
 - **Dynamic Sensor Fusion**  
-  - Real-time visual quality metrics: entropy, intensity changes, pose chi2 error
+  - Real-time visual quality metrics: entropy, intensity changes, Culled keyframes, pose chi2 error
   - CASEF function for adaptive covariance tuning
 
 - **Robust Performance**  
-  - Handles motion blur, low-texture environments
+  - Handles low-texture environments and light changes
   - Automatic Zero Velocity Updates (ZUPT)
 
 ## 📦 Installation
 ```bash
 git clone https://github.com/username/your-repo.git
-cd your-repo
+cd Ufuk-ASIL-prepaper-code
 pip install -r requirements.txt
 ```
 
@@ -40,10 +40,11 @@ python main_esqf-sukf.py --adaptive
 python main_esqf-sukf.py --adaptive \
     --alpha_v 4.5 \
     --epsilon_v 2.2 \
+    --gamma_v 0.2 \
+    --zeta_v 0.1 \
     --s 3.2 \
     --w_thr 0.3 \
-    --zupt_acc_thr 0.15
-```
+    ```
 
 ### Key Parameters
 | Parameter       | Description                          | Default |
@@ -52,7 +53,7 @@ python main_esqf-sukf.py --adaptive \
 | `--alpha_v`     | Intensity difference weight         | 5.0     |
 | `--s`           | CASEF activation steepness          | 3.0     |
 | `--w_thr`       | Lower confidence threshold           | 0.25    |
-| `--zupt_win`    | ZUPT detection window size          | 60      |
+
 
 ## 📂 Dataset Preparation
 1. Download [EuRoC MAV Dataset](https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets)
@@ -66,16 +67,16 @@ python main_esqf-sukf.py --adaptive \
    ```
 
 ## 📊 Performance
-| Metric              | Improvement vs ESKF |
-|---------------------|---------------------|
-| Position Accuracy   | ↑ 40% (MH04-MH05)   |
-| Orientation Error   | ↓ 60%               |
-| Processing Speed    | 1.8x faster         |
+| Metric              | Qf-ES-EKF/UKF vs ESKF   |
+|---------------------|-------------------------|
+| Position Accuracy   | ↑ 40% (MH04-MH05)       |
+| Orientation Error   | ↓ 60%                   |
+| Processing Speed    | 1.8x faster  from SUKF  |
 
 ## 📄 Outputs
 - **Trajectory Files**: `outputs/adaptive_sigma_*.csv`
 - **Result Metrics**: `results.csv`
-- **Debug Data**: Full state estimates with timestamps
+
 
 ## 📜 Citation
 ```bibtex
@@ -83,23 +84,16 @@ python main_esqf-sukf.py --adaptive \
   title = {Your Paper Title},
   author = {Your Name},
   journal = {Journal Name},
-  year = {2023}
+  year = {2025}
 }
 ```
 
-## 🤝 Contributing
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ## 📧 Contact
 - Ufuk Asil - [u.asil@ogr.deu.edu.tr](mailto:u.asil@ogr.deu.edu.tr)
 - Efendi Nasibov - [efendi.nasibov@deu.edu.tr](mailto:efendi.nasibov@deu.edu.tr)
 
-Robotics Lab, Dokuz Eylül University
+Computer Science, Dokuz Eylül University
 
----
 
 **MIT License** - See [LICENSE](LICENSE) for details

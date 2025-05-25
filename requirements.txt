@@ -1,0 +1,10 @@
+numpy
+pandas
+scipy
+opencv-python
+matplotlib
+plotly
+seaborn
+itertools
+concurrent.futures
+collections
