@@ -49,9 +49,9 @@ python main_esqf-sukf.py --adaptive \
 ### Key Parameters
 | Parameter       | Description                          | Default |
 |-----------------|--------------------------------------|---------|
-| `--adaptive`    | Enable adaptive covariance          | False   |
-| `--alpha_v`     | Intensity difference weight         | 5.0     |
-| `--s`           | CASEF activation steepness          | 3.0     |
+| `--adaptive`    | Enable adaptive covariance           | False   |
+| `--alpha_v`     | Intensity difference weight          | 5.0     |
+| `--s`           | CASEF activation steepness           | 3.0     |
 | `--w_thr`       | Lower confidence threshold           | 0.25    |
 
 
