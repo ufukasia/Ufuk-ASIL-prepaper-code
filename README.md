@@ -11,7 +11,7 @@ Otonom sistemlerin, özellikle GNSS sinyallerinin zayıf veya erişilemez olduğ
 
 1.  **Hibrit Qf-ES-EKF/UKF Filtre Mimarisi:** Ataletsel Ölçüm Birimi (IMU) verilerini işlemek için Kuaterniyon Odaklı Hata Durumlu Genişletilmiş Kalman Filtresi/Yönelim İçin Ölçeklenmiş Kokusuz Kalman Filtresi (Qf-ES-EKF/UKF) adı verilen özgün bir hibrit filtre mimarisi geliştirilmiştir. Bu mimari, yönelim kestiriminde SUKF'nin doğrusal olmayan sistemlerdeki üstün modelleme yeteneğini, diğer durum değişkenlerinin (konum, hız, sapmalar) kestiriminde ise ESKF'nin hesaplama verimliliğini birleştirir.
 2.  **CASEF ile Dinamik ve Adaptif Sensör Füzyonu:** Görsel odometri ölçümlerinin güvenilirliği; görüntü entropisi, yoğunluk değişimi, hareket bulanıklığı ve çıkarım kalitesi (örneğin, poz optimizasyonundaki ki-kare hatası) gibi metriklere dayalı olarak dinamik bir sensör güven skoru üzerinden değerlendirilir. Bu skor, özgün **Kırpılmış Uyarlanabilir Doygunluk Üstel Fonksiyonu (CASEF)** kullanılarak ölçüm gürültüsü kovaryansının adaptif bir şekilde ayarlanmasında kullanılır.
-3.  **Yüksek Dinamikli Ortamlarda Kanıtlanmış Performans:** Önerilen sistemin sağlamlığı ve doğruluğu, EuRoC MAV veri seti üzerinde, özellikle zorlu senaryolarda (ani yön değişiklikleri, yüksek ivmeli manevralar, zorlu aydınlatma koşulları) kapsamlı olarak doğrulanmıştır. Konum kestiriminde %40’a varan, rotasyon kestiriminde ise ESKF tabanlı yöntemlere kıyasla %60’a kadar iyileşme gözlemlenmiştir.
+3.  **Yüksek Dinamikli Ortamlarda Kanıtlanmış Performans:** Önerilen sistemin sağlamlığı ve doğruluğu, EuRoC MAV veri seti üzerinde, özellikle zorlu senaryolarda (ani yön değişiklikleri, yüksek ivmeli manevralar, zorlu aydınlatma koşulları) kapsamlı olarak doğrulanmıştır. Konum kestiriminde %40'a varan, rotasyon kestiriminde ise ESKF tabanlı yöntemlere kıyasla %60'a kadar iyileşme gözlemlenmiştir.
 
 ## ⚙️ Sistem Mimarisi
 
@@ -36,38 +36,44 @@ Sistem temel olarak şu modüllerden oluşur:
 ## 🔬 Teorik Arka Plan
 
 ### 1. Durum ve Hata Temsili
-Sistem, bir nominal durum ($\hat{\mathbf{x}}$) ve bu nominal durumdan küçük sapmaları ifade eden bir hata durumu ($\delta\mathbf{x}$) kullanarak durumu modeller:
-$$ \hat{\mathbf{x}} = [\hat{\mathbf{q}}^T, \hat{\mathbf{v}}^T, \hat{\mathbf{p}}^T, \hat{\mathbf{b}}_a^T, \hat{\mathbf{b}}_g^T]^T \in \mathbb{R}^{16} $$
-$$ \delta\mathbf{x} = [\delta\boldsymbol{\theta}^T, \delta\mathbf{v}^T, \delta\mathbf{p}^T, \delta\mathbf{b}_a^T, \delta\mathbf{b}_g^T]^T \in \mathbb{R}^{15} $$
+Sistem, bir nominal durum (\(\hat{\mathbf{x}}\)) ve bu nominal durumdan küçük sapmaları ifade eden bir hata durumu (\(\delta\mathbf{x}\)) kullanarak durumu modeller:
+\[
+\hat{\mathbf{x}} = [\hat{\mathbf{q}}^T, \hat{\mathbf{v}}^T, \hat{\mathbf{p}}^T, \hat{\mathbf{b}}_a^T, \hat{\mathbf{b}}_g^T]^T \in \mathbb{R}^{16}
+\]
+\[
+\delta\mathbf{x} = [\delta\boldsymbol{\theta}^T, \delta\mathbf{v}^T, \delta\mathbf{p}^T, \delta\mathbf{b}_a^T, \delta\mathbf{b}_g^T]^T \in \mathbb{R}^{15}
+\]
 
-burada $\hat{\mathbf{q}}$ yönelim kuaterniyonu, $\hat{\mathbf{p}}$ konum, $\hat{\mathbf{v}}$ hız, $\hat{\mathbf{b}}_{a}$ ivmeölçer sapması, $\hat{\mathbf{b}}_{g}$ jiroskop sapması ve $\delta\boldsymbol{\theta}$ yönelim hatasıdır (3 boyutlu hata).
+burada \(\hat{\mathbf{q}}\) yönelim kuaterniyonu, \(\hat{\mathbf{p}}\) konum, \(\hat{\mathbf{v}}\) hız, \(\hat{\mathbf{b}}_{a}\) ivmeölçer sapması, \(\hat{\mathbf{b}}_{g}\) jiroskop sapması ve \(\delta\boldsymbol{\theta}\) yönelim hatasıdır (3 boyutlu hata).
 
 ### 2. Sistem Dinamikleri ve Ayrıklaştırma
 Nominal durum dinamikleri standart IMU kinematiklerini takip eder. Hata durumu dinamikleri ise şu şekilde ifade edilir:
-$$ \dot{\delta\mathbf{x}} = \mathbf{A}\delta\mathbf{x} + \mathbf{G}\mathbf{n} $$
+\[
+\dot{\delta\mathbf{x}} = \mathbf{A}\delta\mathbf{x} + \mathbf{G}\mathbf{n}
+\]
 Bu sürekli zaman modeli, filtreleme adımlarında kullanılmak üzere Van Loan yöntemi ile ayrıklaştırılır.
 
 ### 3. Hibrit Qf-ES-EKF/UKF ile Durum Yayılımı
 Önerilen hibrit filtre, durum yayılımında iki aşamalı bir strateji izler:
 1.  **ESKF Tabanlı Ön Yayılım:** Tüm durum vektörü ve hata kovaryansı standart ESKF adımlarıyla yayılır.
-2.  **Yönelim Kovaryansının SUKF ile İyileştirilmesi:** ESKF ile yayılmış olan yönelim hatası kovaryans bloğu ($\mathbf{P}_{\theta\theta}$) üzerinde SUKF tabanlı bir iyileştirme uygulanır. Bu, sadece 3 boyutlu yönelim hatası ($\delta\boldsymbol{\theta}$) için sigma noktaları üretilerek ve bu noktalar IMU dinamikleriyle yayılarak gerçekleştirilir.
+2.  **Yönelim Kovaryansının SUKF ile İyileştirilmesi:** ESKF ile yayılmış olan yönelim hatası kovaryans bloğu (\(\mathbf{P}_{\theta\theta}\)) üzerinde SUKF tabanlı bir iyileştirme uygulanır. Bu, sadece 3 boyutlu yönelim hatası (\(\delta\boldsymbol{\theta}\)) için sigma noktaları üretilerek ve bu noktalar IMU dinamikleriyle yayılarak gerçekleştirilir.
 Bu yaklaşım, `ErrorStateKalmanFilterVIO_Hybrid` sınıfında uygulanmıştır. `predict` metodu önce `super().predict()` (ESKF yayılımı) çağrısını yapar, ardından yönelim kovaryansını SUKF adımlarıyla ( `_sigma_points_theta_from_S` ve `_propagate_nominal` kullanarak) rafine eder.
 
 ### 4. Uyarlanabilir Ölçüm Güncelleme Mekanizması
-Görsel ölçümlerin (pozisyon $\mathbf{p}_{\text{vis}}$ ve hız $\mathbf{v}_{\text{vis}}$) filtreye entegrasyonunda, ölçüm gürültüsü kovaryansı $\mathbf{R}_{\text{VIS}}$ dinamik olarak ayarlanır.
+Görsel ölçümlerin (pozisyon \(\mathbf{p}_{\text{vis}}\) ve hız \(\mathbf{v}_{\text{vis}}\)) filtreye entegrasyonunda, ölçüm gürültüsü kovaryansı \(\mathbf{R}_{\text{VIS}}\) dinamik olarak ayarlanır.
 
 *   **Görsel Veri Kalite Analizi:**
     Görsel odometri sistemlerinin başarımını etkileyen başlıca faktörler olan ani ışık değişimleri, düşük desen yoğunluğu ve hızlı kamera hareketleri gibi zorlukların tespiti için çeşitli metrikler kullanılır. Makalede Denklem (14)'te detaylandırılan bu metrikler şunlardır:
-    *   **Statik Metrikler ($\theta_p$ için):** Görüntünün genel kalitesini yansıtır. Örnekler:
-        *   Terslenmiş Shannon entropisi ($1 - {\text{entropy}}_{\mathcal{N}}$): Düşük entropi (yüksek $1 - {\text{entropy}}_{\mathcal{N}}$ değeri), düşük doku veya bilgi içeriği anlamına gelir.
-        *   Hareket bulanıklığı ($\text{blur}_{\mathcal{N}}$): Laplace varyansı gibi yöntemlerle ölçülür.
-        *   Poz optimizasyon ki-kare hatası ($\chi^2_{\text{pose},\mathcal{N}}$): Görsel odometri optimizasyonunun kalitesini gösterir.
-        *   Elenen anahtar kare sayısı ($\text{keyf}^{\text{c}}_{\mathcal{N}}$): İzleme kaybı veya harita tutarsızlığına işaret edebilir.
-    *   **Dinamik Metrikler ($\theta_v$ için):** Ardışık kareler arasındaki değişimleri yansıtır. Örnekler:
-        *   Normalize edilmiş yoğunluk değişimi ($\Delta\text{intensity}_{\mathcal{N}}$): Ani aydınlatma değişikliklerini yakalar.
-        *   Normalize edilmiş bulanıklık değişimi ($\Delta\text{blur}_{\mathcal{N}}$).
-        *   Normalize edilmiş ki-kare hatası değişimi ($\Delta\chi^2_{\text{pose},\mathcal{N}}$).
-        *   Normalize edilmiş elenen anahtar kare sayısındaki değişim ($\Delta\text{keyf}^{\text{c}}_{\mathcal{N}}$).
+    *   **Statik Metrikler (\(\theta_p\) için):** Görüntünün genel kalitesini yansıtır. Örnekler:
+        *   Terslenmiş Shannon entropisi (\(1 - {\text{entropy}}_{\mathcal{N}}\)): Düşük entropi (yüksek \(1 - {\text{entropy}}_{\mathcal{N}}\) değeri), düşük doku veya bilgi içeriği anlamına gelir.
+        *   Hareket bulanıklığı (\(\text{blur}_{\mathcal{N}}\)): Laplace varyansı gibi yöntemlerle ölçülür.
+        *   Poz optimizasyon ki-kare hatası (\(\chi^2_{\text{pose},\mathcal{N}}\)): Görsel odometri optimizasyonunun kalitesini gösterir.
+        *   Elenen anahtar kare sayısı (\(\text{keyf}^{\text{c}}_{\mathcal{N}}\)): İzleme kaybı veya harita tutarsızlığına işaret edebilir.
+    *   **Dinamik Metrikler (\(\theta_v\) için):** Ardışık kareler arasındaki değişimleri yansıtır. Örnekler:
+        *   Normalize edilmiş yoğunluk değişimi (\(\Delta\text{intensity}_{\mathcal{N}}\)): Ani aydınlatma değişikliklerini yakalar.
+        *   Normalize edilmiş bulanıklık değişimi (\(\Delta\text{blur}_{\mathcal{N}}\)).
+        *   Normalize edilmiş ki-kare hatası değişimi (\(\Delta\chi^2_{\text{pose},\mathcal{N}}\)).
+        *   Normalize edilmiş elenen anahtar kare sayısındaki değişim (\(\Delta\text{keyf}^{\text{c}}_{\mathcal{N}}\)).
 
     Aşağıdaki görsel, EuRoC MAV veri setindeki farklı metrikler için uç değerlere sahip sahneleri göstermektedir, bu da metriklerin çeşitli zorlu koşulları nasıl yakaladığını örneklendirir:
     ![Maksimum Metrik Değerlerine Sahip Sahneler](images/information_fotos.png)
@@ -77,14 +83,16 @@ Görsel ölçümlerin (pozisyon $\mathbf{p}_{\text{vis}}$ ve hız $\mathbf{v}_{\
 
 *   **Güven Skoru ve CASEF Aktivasyon Fonksiyonu:**
     Hesaplanan normalize edilmiş metriklerin (ağırlıklandırılmış) maksimumu alınarak birleştirilir ve ardından CASEF fonksiyonuna beslenir:
-    $$ \text{CASEF}(x; s) = \frac{\exp(s \cdot \text{clip}(x, 0.0, 1.0)) - 1}{\exp(s) - 1} $$
-    Bu fonksiyon, $s$ parametresi ile ayarlanabilen bir doygunluk karakteristiği sunar.
+    \[
+    \text{CASEF}(x; s) = \frac{\exp(s \cdot \text{clip}(x, 0.0, 1.0)) - 1}{\exp(s) - 1}
+    \]
+    Bu fonksiyon, \(s\) parametresi ile ayarlanabilen bir doygunluk karakteristiği sunar.
 
 
     ![CASEF Aktivasyon Fonksiyonu](images/activation_functions.png)
     *(Makaledeki Şekil 5)*
 
-    Elde edilen $\theta_p$ ve $\theta_v$ skorları, `config['w_thr']` (ağırlıklandırma eşiği) ve `config['d_thr']` (kesme eşiği) kullanılarak nihai güven değerine dönüştürülür. Bu değerler, $\sigma_p$ ve $\sigma_v$ kovaryanslarını `MIN_COV` ve `MAX_COV` aralığında ölçekler.
+    Elde edilen \(\theta_p\) ve \(\theta_v\) skorları, `config['w_thr']` (ağırlıklandırma eşiği) ve `config['d_thr']` (kesme eşiği) kullanılarak nihai güven değerine dönüştürülür. Bu değerler, \(\sigma_p\) ve \(\sigma_v\) kovaryanslarını `MIN_COV` ve `MAX_COV` aralığında ölçekler.
 
 ### 5. Görsel Odometri Ön-Ucu (Varsayılan)
 Kod, harici bir görsel odometri (VO) sisteminden gelen poz ve hız ölçümlerini kullanır. Makalede PySLAM tabanlı, ALIKED özellik çıkarıcı, LightGlue eşleştirici ve SGBM derinlik hesaplama yöntemlerini kullanan bir VO mimarisi tanımlanmıştır. Bu README'deki kod, bu VO çıktılarının (`mhX_ns.csv` dosyaları) hazır olduğunu varsayar.
@@ -97,7 +105,7 @@ Kod, harici bir görsel odometri (VO) sisteminden gelen poz ve hız ölçümleri
     cd Ufuk-ASIL-prepaper-code
     ```
 2.  Gerekli Python kütüphanelerini kurun. Bir `requirements.txt` dosyası oluşturmanız önerilir:
-    ```
+    ```text
     numpy
     pandas
     scipy
@@ -145,7 +153,7 @@ EuRoC MAV veri setinin Machine Hall (MH) sekansları, özellikle MH04 ve MH05, h
 ![Metrik Korelasyon Matrisi](images/Matrix.png)
 *(Makaledeki Şekil 2)*
 
-Bu matris, örneğin, ATE ile poz optimizasyonundaki Ki-Kare hatası ($\chi^2_{\text{pose}}$) ve elenen anahtar kare sayısı gibi metrikler arasında anlamlı korelasyonlar olduğunu göstermektedir. Bu tür analizler, adaptif kovaryans mekanizmasında hangi metriklerin daha etkili olabileceğine dair ipuçları verir.
+Bu matris, örneğin, ATE ile poz optimizasyonundaki Ki-Kare hatası (\(\chi^2_{\text{pose}}\)) ve elenen anahtar kare sayısı gibi metrikler arasında anlamlı korelasyonlar olduğunu göstermektedir. Bu tür analizler, adaptif kovaryans mekanizmasında hangi metriklerin daha etkili olabileceğine dair ipuçları verir.
 
 ## 🚀 Kullanım
 
@@ -170,9 +178,9 @@ Ana betik `main.py` üzerinden çalıştırılır. Çeşitli parametreler komut 
     *   `--zeta_H`: Artan elenmiş anahtar kare sayısı için ağırlık (varsayılan: 1).
     *   `--zeta_L`: Azalan elenmiş anahtar kare sayısı için ağırlık (varsayılan: 0).
 *   **Eşik ve CASEF Parametreleri:**
-    *   `--w_thr`: Görüntü güveni için ağırlıklandırma eşiği $W_{thr}$ (varsayılan: 0.25).
-    *   `--d_thr`: Görüntü güveni için kesme eşiği $D_{thr}$ (varsayılan: 0.99).
-    *   `--s`: CASEF aktivasyon fonksiyonu için $s$ parametresi (varsayılan: 3.0).
+    *   `--w_thr`: Görüntü güveni için ağırlıklandırma eşiği \(W_{thr}\) (varsayılan: 0.25).
+    *   `--d_thr`: Görüntü güveni için kesme eşiği \(D_{thr}\) (varsayılan: 0.99).
+    *   `--s`: CASEF aktivasyon fonksiyonu için \(s\) parametresi (varsayılan: 3.0).
 *   **ZUPT Parametreleri:**
     *   `--zupt_acc_thr`: ZUPT için ivme std eşiği [m/s²] (varsayılan: 0.1).
     *   `--zupt_gyro_thr`: ZUPT için jiroskop std eşiği [rad/s] (varsayılan: 0.1).
@@ -183,21 +191,13 @@ Ana betik `main.py` üzerinden çalıştırılır. Çeşitli parametreler komut 
 Adaptif mekanizmayı varsayılan parametrelerle çalıştırmak için:
 ```bash
 python main.py --adaptive
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
+```
 
 Belirli parametreleri ayarlayarak çalıştırmak için:
 
+```bash
 python main.py --adaptive --alpha_v 4.5 --epsilon_v 2.2 --s 3.2 --w_thr 0.3
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bash
-IGNORE_WHEN_COPYING_END
+```
 
 Betik, MH01'den MH05'e kadar olan sekansları concurrent.futures.ProcessPoolExecutor kullanarak paralel olarak işleyecektir. Sonuçlar outputs/ klasörüne ve genel bir özet results.csv (veya SAVE_RESULTS_CSV_NAME ile belirtilen) dosyasına kaydedilecektir.
 
@@ -227,6 +227,7 @@ Gerçek Zamanlı Uygulama Optimizasyonu: Algoritma optimizasyonları ve paralel 
 
 Bu çalışmayı veya kodu kullanırsanız, lütfen aşağıdaki şekilde (veya yayınlandığında makaleyi) referans gösterin:
 
+```bibtex
 @article{AsilNasibovVIO2024,
   author    = {Ufuk Asil and Efendi Nasibov},
   title     = {Görsel-Ataletsel Odometri İçin Uyarlanabilir Kovaryans ve Kuaterniyon Odaklı Hibrit Hata Durumlu EKF/UKF Yaklaşımı},
@@ -235,12 +236,8 @@ Bu çalışmayı veya kodu kullanırsanız, lütfen aşağıdaki şekilde (veya 
   note      = {Kod adresi: https://github.com/ufukasia/Ufuk-ASIL-prepaper-code.git}
 }
 % Yayınlandığında bu BibTeX girdisini güncelleyiniz.
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-Bibtex
-IGNORE_WHEN_COPYING_END
+```
+
 📝 Lisans
 
 Bu proje MIT Lisansı altında lisanslanmıştır. (Projenize bir LISANS dosyası ekleyiniz.)
@@ -252,9 +249,3 @@ Ufuk Asil: u.asil@ogr.deu.edu.tr
 Efendi Nasibov: efendi.nasibov@deu.edu.tr
 
 Dokuz Eylül Üniversitesi, Bilgisayar Bilimleri Bölümü
-
-IGNORE_WHEN_COPYING_START
-content_copy
-download
-Use code with caution.
-IGNORE_WHEN_COPYING_END
