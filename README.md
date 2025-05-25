@@ -24,7 +24,7 @@ A robust VIO solution combining Error-State Kalman Filter (ESKF) and Unscented K
 
 ## 📦 Installation
 ```bash
-git clone https://github.com/username/your-repo.git
+git clone https://github.com/ufukasia/Ufuk-ASIL-prepaper-code.git
 cd Ufuk-ASIL-prepaper-code
 pip install -r requirements.txt
 ```
@@ -55,8 +55,9 @@ python main_esqf-sukf.py --adaptive \
 | `--w_thr`       | Lower confidence threshold           | 0.25    |
 
 
-## 📂 Dataset Preparation
+## 📂 VO Preparation
 1. Download [EuRoC MAV Dataset](https://projects.asl.ethz.ch/datasets/doku.php?id=kmavvisualinertialdatasets)
+2. VO code [Pyslam](https://github.com/luigifreda/pyslam)
 2. Organize structure:
    ```
    ├── imu_interp_gt
