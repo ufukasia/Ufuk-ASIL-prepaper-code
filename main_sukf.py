@@ -1,5 +1,5 @@
 SAVE_RESULTS_CSV = True
-SAVE_RESULTS_CSV_NAME = "results.csv" # Filename for storing summary results.
+SAVE_RESULTS_CSV_NAME = "results.csv"
 
 import numpy as np
 import pandas as pd
@@ -21,31 +21,31 @@ from cov_sigma_p import compute_adaptive_sigma_p
 import argparse
 parser = argparse.ArgumentParser()
 
-# Adaptive covariance parameters for sigma_p
-parser.add_argument("--beta_p", type=float, default=1, help="Weight for the inverse entropy metric in adaptive sigma_p calculation.")
-parser.add_argument("--epsilon_p", type=float, default=1, help="Weight for the pose chi-squared metric in adaptive sigma_p calculation.")
-parser.add_argument("--zeta_p", type=float, default=1, help="Weight for the culled keyframes metric in adaptive sigma_p calculation.")
+# Weights for sigma_p
+parser.add_argument("--beta_p", type=float, default=1, help="Weight for inv_entropy (for sigma_p)")
+parser.add_argument("--epsilon_p", type=float, default=1, help="Weight for pose_chi2 (for sigma_p)")
+parser.add_argument("--zeta_p", type=float, default=1, help="Weight for culled_keyframes (for sigma_p)")
 
-# Normalization minimum values for sigma_p components. Increasing these values shifts the normalization curve downwards.
-parser.add_argument("--entropy_norm_min", type=float, default=0, help="Minimum normalization threshold for the entropy metric in sigma_p.")
-parser.add_argument("--pose_chi2_norm_min", type=float, default=1, help="Minimum normalization threshold for the pose chi-squared metric in sigma_p.")
-parser.add_argument("--culled_norm_min", type=float, default=0, help="Minimum normalization threshold for the culled keyframes metric in sigma_p.")
+# Minimum values for sigma_p normalization terms.
+parser.add_argument("--entropy_norm_min", type=float, default=0, help="Minimum value for Entropy normalization (sigma_p)")
+parser.add_argument("--pose_chi2_norm_min", type=float, default=1, help="Minimum value for Pose Chi2 normalization (sigma_p)")
+parser.add_argument("--culled_norm_min", type=float, default=0, help="Minimum value for Culled Keyframes normalization (sigma_p)")
 
-# Adaptive covariance parameters for sigma_v
-parser.add_argument("--alpha_v", type=float, default=5, help="Weight for the intensity difference metric in adaptive sigma_v calculation.")
-parser.add_argument("--epsilon_v", type=float, default=2, help="Weight for the pose chi-squared difference metric in adaptive sigma_v calculation.")
-parser.add_argument("--zeta_H", type=float, default=1, help="Weight for an increase in culled keyframes in adaptive sigma_v calculation.")
-parser.add_argument("--zeta_L", type=float, default=0, help="Weight for a decrease in culled keyframes in adaptive sigma_v calculation.")
+# Weights for sigma_v
+parser.add_argument("--alpha_v", type=float, default=5, help="Weight for Intensity difference (sigma_v)")
+parser.add_argument("--epsilon_v", type=float, default=2, help="Weight for Pose_chi2 difference (sigma_v)")
+parser.add_argument("--zeta_H", type=float, default=1, help="Weight for increasing culled_keyframes (sigma_v)")
+parser.add_argument("--zeta_L", type=float, default=0, help="Weight for decreasing culled_keyframes (sigma_v)")
 
-parser.add_argument("--w_thr", type=float, default=0.25, help="Weight threshold for image confidence, used in adaptive covariance scaling.")
-parser.add_argument("--d_thr", type=float, default=0.99, help="Depth threshold for image confidence, used in adaptive covariance scaling.")
-parser.add_argument("--s", type=float, default=3.0, help="Parameter 's' for the CASEF activation function, controlling its steepness.")
-parser.add_argument("--adaptive", action="store_true", default=False, help="Enable adaptive covariance estimation for visual measurements.")
+parser.add_argument("--w_thr", type=float, default=0.25, help="w_thr parameter for image confidence")
+parser.add_argument("--d_thr", type=float, default=0.99, help="d_thr parameter for image confidence")
+parser.add_argument("--s", type=float, default=3.0, help="s parameter for CASEF activation function")
+parser.add_argument("--adaptive", action="store_true", default=True, help="Whether to use adaptive covariance")
 
-# Zero-velocity update (ZUPT) parameters
-parser.add_argument("--zupt_acc_thr", type=float, default=0.1, help="Standard deviation threshold of accelerometer readings for ZUPT detection [m/s²].")
-parser.add_argument("--zupt_gyro_thr", type=float, default=0.1, help="Standard deviation threshold of gyroscope readings for ZUPT detection [rad/s].")
-parser.add_argument("--zupt_win", type=int, default=60, help="Sliding window size (number of samples) for ZUPT static detection.")
+
+parser.add_argument("--zupt_acc_thr", type=float, default=0.1, help="Accelerometer std threshold for ZUPT [m/s^2]")
+parser.add_argument("--zupt_gyro_thr", type=float, default=0.1, help="Gyroscope std threshold for ZUPT [rad/s]")
+parser.add_argument("--zupt_win", type=int, default=60, help="Window size for ZUPT (number of samples)")
 
 args = parser.parse_args()
 
@@ -55,10 +55,8 @@ args = parser.parse_args()
 def casef(x, s):
     """
     Clipped Adaptive Saturation Exponential Function (CASEF).
-    This function provides a tunable non-linear mapping, crucial for scaling adaptive covariance metrics.
-    It returns 0 for negative inputs, scales exponentially within the [0, 1] range,
-    and saturates at 1 for inputs greater than or equal to 1.
-    The parameter 's' controls the steepness of the exponential curve.
+    Outputs 0 for negative inputs, scales exponentially in the 0-1 range,
+    and saturates to 1 for inputs above 1.
     """
     x_clip = np.clip(x, 0.0, 1.0)
 
@@ -67,18 +65,18 @@ def casef(x, s):
     MAX_SAFE_EXP_ARG = 100 
     MIN_SAFE_EXP_ARG = -100
 
-    # Handle cases where 's' is extremely large or small to prevent numerical issues.
-    if s > MAX_SAFE_EXP_ARG:
+    # Handle large positive s
+    if s > MAX_SAFE_EXP_ARG: # exp(s) will be inf
         return 1.0 if np.isclose(x_clip, 1.0) else 0.0
 
-    if s < MIN_SAFE_EXP_ARG:
+    if s < MIN_SAFE_EXP_ARG: # exp(s) will be 0.0
         return 0.0 if np.isclose(x_clip, 0.0) else 1.0
 
     exp_s = np.exp(s)
     numerator = np.exp(s * x_clip) - 1.0
     denominator = exp_s - 1.0
 
-    # Fallback to linear behavior if the denominator is near zero (s was extremely close to 0).
+    # If denominator is zero (s was extremely close to 0, exp_s is 1.0)
     if np.isclose(denominator, 0.0):
         return x_clip # Fallback to linear behavior
 
@@ -86,7 +84,6 @@ def casef(x, s):
 
 activation_func = lambda x: casef(x, args.s)
 
-# Configuration dictionary aggregating parameters for adaptive covariance and other modules.
 config = {
     'alpha_v': args.alpha_v, 
     'beta_p': args.beta_p,      
@@ -105,13 +102,9 @@ config = {
 }
 
 # =========================================================
-# Yardımcı Fonksiyonlar (Quaternion İşlemleri vb.)
+# Helper Functions (Quaternion Operations, etc.)
 # =========================================================
 def skew(vector):
-    """
-    Computes the skew-symmetric matrix of a 3D vector.
-    This operation is fundamental in representing cross-product operations as matrix multiplications, e.g., in ESKF Jacobians.
-    """
     return np.array([
         [0, -vector[2], vector[1]],
         [vector[2], 0, -vector[0]],
@@ -119,18 +112,10 @@ def skew(vector):
     ])
 
 def convert_quaternion_order(q_wxyz):
-    """
-    Converts a quaternion from [w, x, y, z] order to [x, y, z, w] order.
-    This conversion is primarily for compatibility with libraries like scipy.spatial.transform.Rotation.
-    """
     q_wxyz = np.array(q_wxyz)
     return np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
 
 def quaternion_multiply(q1, q2):
-    """
-    Performs quaternion multiplication (Hamilton product) of two quaternions.
-    Inputs q1 and q2 are assumed to be in [w, x, y, z] (scalar-first) order.
-    """
     w1, x1, y1, z1 = q1; w2, x2, y2, z2 = q2
     w = w1*w2 - x1*x2 - y1*y2 - z1*z2
     x = w1*x2 + x1*w2 + y1*z2 - z1*y2
@@ -139,31 +124,18 @@ def quaternion_multiply(q1, q2):
     return np.array([w, x, y, z])
 
 def quaternion_conjugate(q):
-    """
-    Computes the conjugate of a quaternion.
-    Input q is assumed to be in [w, x, y, z] (scalar-first) order.
-    """
     return np.array([q[0], -q[1], -q[2], -q[3]])
 
 def delta_quaternion(delta_theta):
-    """
-    Constructs a small rotation quaternion from a 3D small angle error vector (delta_theta).
-    This is a first-order approximation used for injecting angular errors into the nominal quaternion state.
-    """
     return np.concatenate([[1.0], 0.5 * delta_theta])
 
 
 def quaternion_to_euler(q):
-    """
-    Converts a quaternion to Euler angles (XYZ convention, degrees).
-    Input q is assumed to be in [w, x, y, z] (scalar-first) order.
-    """
     q_xyzw = [q[1], q[2], q[3], q[0]]
     r = R.from_quat(q_xyzw)
     return r.as_euler('xyz', degrees=True)
 
 def ensure_quaternion_continuity(q, q_prev):
-    """Ensures quaternion continuity by addressing the double-cover property."""
     if np.dot(q, q_prev) < 0:
         return -q
     return q
@@ -171,60 +143,43 @@ def ensure_quaternion_continuity(q, q_prev):
 def align_quaternions(estimated_quaternions, true_quaternions):
     min_length = min(len(estimated_quaternions), len(true_quaternions))
     aligned_quaternions = np.copy(estimated_quaternions[:min_length])
-    """
-    Aligns a sequence of estimated quaternions with a sequence of true quaternions
-    to maintain continuity and minimize angular errors for consistent error evaluation.
-    """
     for i in range(min_length):
         if np.dot(estimated_quaternions[i], true_quaternions[i]) < 0:
             aligned_quaternions[i] = -aligned_quaternions[i]
     return aligned_quaternions
 
 def ensure_angle_continuity(angles, threshold=180):
-    """
-    Unwraps angles to ensure continuity, preventing large jumps due to angle wrapping.
-    Crucial for accurate plotting and RMSE calculation of angular trajectories.
-    """
     return np.unwrap(angles, axis=0, period=2 * threshold)
 
 def angle_difference(angle1, angle2):
-    """
-    Calculates the shortest angular difference between two angles in degrees,
-    correctly handling the 360-degree wrap-around.
-    """
     diff = angle1 - angle2
     return (diff + 180) % 360 - 180
 
 def calculate_angle_rmse(predictions, targets):
-    """Calculates Root Mean Squared Error (RMSE) for angular data (degrees), robust to wrapping."""
     diff = np.array([angle_difference(p, t) for p, t in zip(predictions, targets)])
     return np.sqrt((diff ** 2).mean(axis=0))
 
 # =========================================================
-# ESKF Sınıfı (Bias Tahmini ile) - Original Base Class
+# ESKF Class (with Bias Estimation) - Original Base Class
 # =========================================================
 class ErrorStateKalmanFilterVIO:
-    """
-    Implements a standard Error-State Kalman Filter (ESKF) for Visual-Inertial Odometry (VIO).
-    The filter estimates orientation (quaternion), velocity, position, and IMU biases.
-    This class serves as a base for more advanced filter implementations like UKF.
-    """
     def __init__(self, initial_quaternion, initial_velocity, initial_position,
                  initial_accel_bias=np.zeros(3), initial_gyro_bias=np.zeros(3),
                  gravity_vector=np.array([0, 0, -9.81]),
-                 tau_a=300.0, tau_g=1000.0, sigma_wa=2e-5, sigma_wg=2e-5, 
+                 # Gauss-Markov & Noise Parameters (EuRoC MAV Values)
+                 tau_a=300.0, tau_g=1000.0,         # Correlation times (s)
+                 sigma_wa=2e-5, sigma_wg=2e-5, 
                  sigma_g=2e-4, sigma_a=2e-1):
 
-        # Nominal Durum
+        # Nominal State
         self.q = initial_quaternion / np.linalg.norm(initial_quaternion) # Ensure initial norm
         self.v = initial_velocity
         self.p = initial_position
         self.b_a = initial_accel_bias
         self.b_g = initial_gyro_bias
         self.g = gravity_vector
-
-        # Hata Durumu Kovaryansı (15x15)
-        # Error state vector: [delta_theta, delta_v, delta_p, delta_b_a, delta_b_g]
+        # Error State Covariance (15x15)
+        # [delta_theta, delta_v, delta_p, delta_b_a, delta_b_g]
         P_init_ori = 1e-6 * np.eye(3)
         P_init_vel = 1e-3 * np.eye(3)
         P_init_pos = 1e-3 * np.eye(3)
@@ -239,114 +194,102 @@ class ErrorStateKalmanFilterVIO:
             [np.zeros((3,12)), P_init_bg]
         ])
 
-        # IMU Noise Parameters and Bias Correlation Times
+        # Noise densities (measurement + bias)
         self.sigma_g = sigma_g
         self.sigma_a = sigma_a
-        self.sigma_wa = sigma_wa 
-        self.sigma_wg = sigma_wg 
+        self.sigma_wa = sigma_wa # Accel random walk
+        self.sigma_wg = sigma_wg # Gyro random walk
         self.tau_a = tau_a
         self.tau_g = tau_g
-
-        # Continuous-Time Process Noise Covariance (Q_c): 15x15 matrix for error state dynamics
+        # Continuous-time process covariance (15x15)
         Qc = np.zeros((15,15))
-        Qc[0:3,  0:3]   = (self.sigma_g**2) * np.eye(3)  # Gyroscope white noise contribution
-        Qc[3:6,  3:6]   = (self.sigma_a**2) * np.eye(3)  # Accelerometer white noise contribution
-        Qc[9:12, 9:12]  = (self.sigma_wa**2) * np.eye(3) # Accelerometer bias random walk contribution
-        Qc[12:15,12:15] = (self.sigma_wg**2) * np.eye(3) # Gyroscope bias random walk contribution
+        # Measurement noises:
+        Qc[0:3,  0:3]   = (self.sigma_g**2) * np.eye(3)  # gyro white noise
+        Qc[3:6,  3:6]   = (self.sigma_a**2) * np.eye(3)  # accel white noise
+        # Bias diffusion (Gauss–Markov random walk):
+        Qc[9:12, 9:12]  = (self.sigma_wa**2) * np.eye(3) # accel bias random walk
+        Qc[12:15,12:15] = (self.sigma_wg**2) * np.eye(3) # gyro bias random walk
         self.Q_c = Qc
-
-        # Measurement Noise Covariances (R)
-        self.R_zupt = np.diag([1e-3, 1e-3, 1e-3]) # Covariance for Zero-Velocity Update (ZUPT)
+        # Measurement Noise Covariances
+        self.R_zupt = np.diag([1e-3, 1e-3, 1e-3]) # For ZUPT (this value can be reviewed)
         fixed_sigma_p = 1e0 
         fixed_sigma_v = 1e-2
         self.R_vis_6d = np.diag([fixed_sigma_p**2, fixed_sigma_p**2, fixed_sigma_p**2,
-                                 fixed_sigma_v**2, fixed_sigma_v**2, fixed_sigma_v**2]) # Covariance for visual position/velocity measurements
+                                 fixed_sigma_v**2, fixed_sigma_v**2, fixed_sigma_v**2]) 
 
     def _compute_van_loan_matrices(self, R_nav_from_body, accel_corrected, gyro_corrected, dt):
-        """
-        Computes the discrete-time state transition matrix (Phi) and discrete-time
-        process noise covariance matrix (Qd) for the error state dynamics using the Van Loan method.
-        This method ensures consistency between state propagation and covariance propagation.
-        """
+        """ Computes discrete Phi and Qd matrices using the Van Loan method. """
         I3 = np.eye(3)
         Z3 = np.zeros((3, 3))
 
-        # Construct the continuous-time error state dynamics matrix A (15x15)
-        # A represents the Jacobian of the continuous-time error state dynamics.
+        # Continuous-time error-state dynamics matrix A (15x15)
         A = np.zeros((15, 15))
         A[0:3, 0:3] = -skew(gyro_corrected)    # d(delta_theta)/dt
-        A[0:3, 12:15] = -I3                    # d(delta_theta)/dt bağımlılığı delta_b_g'ye
-        A[3:6, 0:3] = -R_nav_from_body @ skew(accel_corrected) # d(delta_v)/dt bağımlılığı delta_theta'ya
-        A[3:6, 9:12] = -R_nav_from_body        # d(delta_v)/dt bağımlılığı delta_b_a'ya
-        A[6:9, 3:6] = I3                       # d(delta_p)/dt bağımlılığı delta_v'ye
+        A[0:3, 12:15] = -I3                    # Dependency of d(delta_theta)/dt on delta_b_g
+        A[3:6, 0:3] = -R_nav_from_body @ skew(accel_corrected) # Dependency of d(delta_v)/dt on delta_theta
+        A[3:6, 9:12] = -R_nav_from_body        # Dependency of d(delta_v)/dt on delta_b_a
+        A[6:9, 3:6] = I3                       # Dependency of d(delta_p)/dt on delta_v
         A[9:12, 9:12] = -1/self.tau_a * I3     # d(delta_b_a)/dt (Gauss-Markov)
         A[12:15, 12:15] = -1/self.tau_g * I3   # d(delta_b_g)/dt (Gauss-Markov)
-
-
-        # Form the augmented matrix M for the Van Loan method (30x30)
-        # M = [[ A*dt, Qc*dt ],
-        #      [  0,  -A.T*dt ]]
+        # Matrix construction for Van Loan (30x30)
         M = np.zeros((30, 30))
         M[0:15, 0:15] = A * dt
         M[0:15, 15:30] = self.Q_c * dt
-        M[15:30, 15:30] = -A.T * dt
+        M[15:30, 15:30] = -A.T * dt # This term is -A.T * dt as per Van Loan method.
 
-        # Compute the matrix exponential of M
+        # Compute matrix exponential
         M_exp = expm(M)
 
-        # Extract the discrete state transition matrix (Phi) and discrete process noise covariance (Qd)
-        # from the partitioned matrix exponential of M.
+        # Extract discrete Phi and Qd (Correct Van Loan extraction)
         Phi = M_exp[0:15, 0:15] # expm(A*dt)
         Qd = M_exp[0:15, 15:30] @ Phi.T 
-        # Ensure Qd is symmetric for numerical stability.
+        # Ensure Qd is symmetric
         Qd = 0.5 * (Qd + Qd.T)
 
         return Phi, Qd
 
     def predict(self, gyro_raw, accel_raw, dt):
-        """
-        Performs the prediction step of the ESKF, propagating nominal state and error covariance.
-        """
         if dt <= 0:
             return
         q = self.q; v = self.v; p = self.p; b_a = self.b_a; b_g = self.b_g
 
-        # Biasları düzelt
+        # Correct for biases
         accel_corrected = accel_raw - b_a
         gyro_corrected = gyro_raw - b_g
 
-        # --- Nominal State Propagation ---
-        # Quaternion update using Euler integration
+        # --- Nominal State Update ---
+        # Quaternion update (with gyro_corrected)
         dq_dt = 0.5 * np.array([
-            -q[1]*gyro_corrected[0] - q[2]*gyro_corrected[1] - q[3]*gyro_corrected[2],
+            -q[1]*gyro_corrected[0] - q[2]*gyro_corrected[1] - q[3]*gyro_corrected[2], # w_dot
              q[0]*gyro_corrected[0] + q[2]*gyro_corrected[2] - q[3]*gyro_corrected[1],
              q[0]*gyro_corrected[1] - q[1]*gyro_corrected[2] + q[3]*gyro_corrected[0],
              q[0]*gyro_corrected[2] + q[1]*gyro_corrected[1] - q[2]*gyro_corrected[0]
         ])
         q_new = q + dq_dt * dt
-        q_new /= np.linalg.norm(q_new) # Normalizasyon
-        # Compute rotation matrix from the newly predicted quaternion
+        q_new /= np.linalg.norm(q_new) # Normalization
+
+        # Rotation matrix (from updated q_new)
         q_xyzw = convert_quaternion_order(q_new)
         R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
 
-        # Velocity and position update using IMU measurements and gravity
+        # Velocity update (with accel_corrected and current R)
         a_nav = R_nav_from_body @ accel_corrected + self.g
         v_new = v + a_nav * dt
         p_new = p + v * dt + 0.5 * a_nav * dt**2 
 
-        # Biases are modeled as random walks and remain constant during nominal state propagation
+        # Bias state remains constant (only error state is updated)
         b_a_new = b_a
         b_g_new = b_g
 
-        # --- Error State Covariance Propagation (using Van Loan method) ---
-        # Compute discrete state transition matrix (Phi) and process noise covariance (Qd)
+        # --- Hata Durumu Kovaryans Güncellemesi (Van Loan) ---
         Phi, Qd = self._compute_van_loan_matrices(R_nav_from_body, accel_corrected, gyro_corrected, dt)
-        # Propagate the error state covariance: P_new = Phi * P * Phi^T + Qd
+
+        # Kovaryansı güncelle: P = Phi * P * Phi^T + Qd
+        # Update covariance: P = Phi * P * Phi^T + Qd
         P_new = Phi @ self.P @ Phi.T + Qd
         # Ensure P remains symmetric
         self.P = 0.5 * (P_new + P_new.T)
-
-        # Nominal durumu güncelle
+        # Update nominal state
         self.q = q_new
         self.v = v_new
         self.p = p_new
@@ -354,10 +297,7 @@ class ErrorStateKalmanFilterVIO:
         self.b_g = b_g_new
 
     def _update_common(self, delta_x):
-        """
-        Applies the error state correction (delta_x) to the nominal state variables.
-        This retraction operation updates the quaternion via multiplication and other states via addition.
-        """
+        """ Common state update logic. """
         
         dq = delta_quaternion(delta_x[0:3])
         self.q = quaternion_multiply(self.q, dq)
@@ -369,86 +309,69 @@ class ErrorStateKalmanFilterVIO:
         self.b_g += delta_x[12:15]
 
     def zero_velocity_update(self):
-        """
-        Performs a Zero-Velocity Update (ZUPT) to correct the filter state
-        when the IMU is detected to be stationary.
-        """
         q_xyzw = convert_quaternion_order(self.q)
         R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
         R_body_from_nav = R_nav_from_body.T
 
-        # Ölçüm: Navigasyon çerçevesindeki hızın body çerçevesindeki ifadesi
+        # Measurement: Velocity in navigation frame expressed in body frame
         v_body_predicted = R_body_from_nav @ self.v
-        y = -v_body_predicted # Ölçüm artığı (residual)
+        y = -v_body_predicted # Measurement residual
 
-        # Construct the Jacobian matrix H for the ZUPT measurement
-        # H relates the error state to the measurement residual.
         H = np.zeros((3, 15))
+        # Jacobian of measurement residual (0 - R_body_from_nav @ v) w.r.t. delta_theta
         H[:, 0:3] = -skew(R_body_from_nav @ self.v) 
+        # Jacobian of R_body_from_nav @ v w.r.t delta_v
         H[:, 3:6] = R_body_from_nav            
 
-        # Kalman güncelleme adımları
+        # Kalman update steps
         S = H @ self.P @ H.T + self.R_zupt
         try:
             S_inv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
-            print("Warning: ZUPT innovation covariance matrix S is singular. Skipping ZUPT update.")
-            return
+            print("Warning: ZUPT S matrix is not invertible!")
+            return # Update cannot be performed
         K = self.P @ H.T @ S_inv # Kalman kazancı (15x3)
+        delta_x = K @ y # Error state correction (15x1)
 
-        delta_x = K @ y # Hata durumu düzeltmesi (15x1)
+        # Update state and covariance (Joseph Form)
 
-        # Reset velocity to zero as per ZUPT assumption.
+
+        # Velocity (self.v) will be reset when ZUPT is detected.
         self.v = np.zeros(3)
-        # Correct other states based on the error state correction.
-        # Note: The H matrix structure implies that delta_x[0:3] (orientation error)
-        # is not directly corrected by this specific measurement update, but other parts of delta_x are.
-        # The quaternion itself is not directly reset/updated here beyond the _update_common if it were called.
-        # However, the standard ESKF ZUPT often directly resets velocity and corrects biases/position.
-        # Here, we apply corrections based on delta_x for consistency with a general update.
-        # For a strict ZUPT, one might only correct biases and position if velocity is reset.
-        # The current delta_x will have components for orientation error if K maps y to it.
-        # Let's apply the parts of delta_x that are relevant given H.
-        # self.q is not updated via delta_x[0:3] here, as H[0:3] is non-zero.
-        # self.p, self.b_a, self.b_g are updated.
-        self.p += delta_x[6:9]
+        # Other states are updated based on the correction:
+        self.p += delta_x[6:9]  # Position is updated via delta_x[6:9]; note H for ZUPT has no direct position terms.
         self.b_a += delta_x[9:12]
         self.b_g += delta_x[12:15]
         
         I15 = np.eye(15)
-        P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ self.R_zupt @ K.T
+        P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ self.R_zupt @ K.T # Joseph form
         self.P = 0.5 * (P_new + P_new.T) # Ensure symmetry
-
     def vision_posvel_update(self, p_meas, v_meas, R_vision):
-        """Updates the filter state using visual position and velocity measurements."""
-        y = np.concatenate([p_meas - self.p, v_meas - self.v]) # Ölçüm artığı (6x1)
+        """ Updates with visual position and velocity measurement. R_vision is provided externally. """
+        y = np.concatenate([p_meas - self.p, v_meas - self.v]) # Measurement residual (6x1)
         H = np.zeros((6, 15))
-        H[0:3, 6:9] = np.eye(3)  # H_p: Pozisyon hatasının ölçüme etkisi
-        H[3:6, 3:6] = np.eye(3)  # H_v: Hız hatasının ölçüme etkisi
+        H[0:3, 6:9] = np.eye(3)  # H_p: Effect of position error on measurement
+        H[3:6, 3:6] = np.eye(3)  # H_v: Effect of velocity error on measurement
 
-        # Kalman güncelleme adımları
-        S = H @ self.P @ H.T + R_vision # Güncellenmiş R_vision kullanılır
-
+        # Kalman update steps
+        S = H @ self.P @ H.T + R_vision # Updated R_vision is used
         try:
             S_inv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
-            print("Warning: Vision innovation covariance matrix S is singular. Skipping vision update.")
-            return
+            print("Uyarı: Vision S matrisi tersinir değil!")
+            return # Güncelleme yapılamaz
         K = self.P @ H.T @ S_inv # Kalman kazancı (15x6)
 
-        delta_x = K @ y # Hata durumu düzeltmesi (15x1)
+        delta_x = K @ y # Error state correction (15x1)
 
-        # Apply the error state correction and update covariance
+        # Update state and covariance (Joseph Form)
         self._update_common(delta_x)
         I15 = np.eye(15)
-        P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ R_vision @ K.T
+        P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ R_vision @ K.T # Joseph form
         self.P = 0.5 * (P_new + P_new.T) # Ensure symmetry
 
     def gravity_update(self, accel_raw): # Takes accel_raw only now
-        """
-        Updates the accelerometer bias using the gravity vector as a measurement
-        when the system is detected to be stationary.
-        """
+        """ Updates accelerometer bias using gravity during static conditions. """
         # Calculate R_nav_from_body from current state quaternion
         q_xyzw = convert_quaternion_order(self.q)
         R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
@@ -462,48 +385,36 @@ class ErrorStateKalmanFilterVIO:
         # Jacobian H
         H = np.zeros((3,15))
         # Jacobian of (accel_raw - b_a) - (R_body_from_nav @ (-g)) w.r.t delta_theta
-        H[:, 0:3] = skew(R_body_from_nav @ self.g)
+        H[:, 0:3] = skew(R_body_from_nav @ self.g) # Correct Jacobian for gravity update
         # Jacobian w.r.t delta_b_a
         H[:, 9:12] = -np.eye(3)
         
-        # Measurement noise covariance for accelerometer
+        # Measurement noise
         R_acc = (self.sigma_a**2) * np.eye(3)
 
-        # Kalman güncellemesi
+        # Kalman update
         S  = H @ self.P @ H.T + R_acc
         try:
             S_inv = np.linalg.inv(S)
         except np.linalg.LinAlgError:
-            print("Warning: Gravity Update innovation covariance matrix S is singular. Skipping gravity update.")
-            return
+            print("Warning: Gravity Update S matrix is not invertible!")
+            return # Update cannot be performed
         K  = self.P @ H.T @ S_inv
         dx = K @ y
         
-        # Apply the error state correction to the nominal state variables.
-        # Note: The H matrix structure implies that delta_x[3:6] (velocity error),
-        # delta_x[6:9] (position error), and delta_x[12:15] (gyro bias error)
-        # are not directly corrected by this measurement.
-        # The quaternion is corrected via dx[0:3] through _update_common if it were called.
-        # Here, we apply corrections based on dx for consistency.
-        # self.q is not updated via dx[0:3] here.
-        self.v += dx[3:6]
-        self.p += dx[6:9]
+        self.v += dx[3:6]     # Velocity error dx[3:6] is updated; H for gravity has no direct velocity terms.
+        self.p += dx[6:9]     # Position error dx[6:9] is updated; H for gravity has no direct position terms.
         self.b_a += dx[9:12]
-        self.b_g += dx[12:15]
+        self.b_g += dx[12:15] # Gyro bias error dx[12:15] is updated; H for gravity has no direct gyro bias terms.
 
         I15 = np.eye(15)
-        P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ R_acc @ K.T
+        P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ R_acc @ K.T # Joseph form
         self.P = 0.5 * (P_new + P_new.T) # Ensure symmetry
 
 # =========================================================
-# UKF-ESKF Sınıfı (Additive UKF + SUT)
+# UKF-ESKF Class (Additive UKF + SUT)
 # =========================================================
 class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
-    """
-    Implements an Error-State Kalman Filter for VIO using an Unscented Kalman Filter (UKF)
-    for the error-state propagation and update steps. This approach aims to better handle
-    non-linearities compared to the standard ESKF's linearization.
-    """
     def __init__(self, initial_quaternion, initial_velocity, initial_position,
                  initial_accel_bias=np.zeros(3), initial_gyro_bias=np.zeros(3),
                  gravity_vector=np.array([0, 0, -9.81]),
@@ -518,10 +429,10 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
                          tau_a, tau_g, sigma_wa, sigma_wg, sigma_g, sigma_a)
 
         # UKF/SUT Parameters
-        self.n = 15                # Error-state dimension: [delta_theta, delta_v, delta_p, delta_b_a, delta_b_g]
-        self.α = 0.5               # SUT scaling parameter alpha (controls spread of sigma points)
-        self.β = 2.0               # SUT scaling parameter beta (incorporates prior knowledge of distribution, 2.0 is optimal for Gaussian)
-        self.κ = 3 - self.n        # SUT scaling parameter kappa (secondary scaling, 3-n often recommended)
+        self.n = 15                # Error-state dimension [delta_theta, delta_v, delta_p, delta_b_a, delta_b_g]
+        self.α = 0.5               # SUT scaling parameter alpha
+        self.β = 2.0               # SUT scaling parameter beta (optimal for Gaussian)
+        self.κ = 3 - self.n        # SUT scaling parameter kappa (Merwe's recommendation: 3-n)
         self.λ = self.α**2 * (self.n + self.κ) - self.n # Composite scaling parameter lambda
         
         # Sigma point weights (Merwe's Scaled Unscented Transform)
@@ -531,15 +442,12 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         self.Wc[0] = self.Wm[0] + (1 - self.α**2 + self.β)             # Weight for covariance (center point)
 
     def _sigma_points(self, x_mean, P):
-        """
-        Generates sigma points for the Unscented Transform based on the current error-state
-        mean (typically zero) and covariance P.
-        """
+        """ Generates sigma points for the UKF based on mean and covariance. """
         num_states = P.shape[0] # Should be self.n
         if num_states != self.n:
              print(f"Warning: P matrix size {P.shape} does not match state size {self.n} in _sigma_points")
-             # This indicates a potential inconsistency in state dimension management.
-
+             # Potentially handle error or adjust self.n; proceeding with P's dimension.
+             # This might indicate an issue elsewhere if P size changes unexpectedly.
 
         # Ensure P is positive semi-definite before Cholesky
         P = 0.5 * (P + P.T) # Ensure symmetry
@@ -551,7 +459,7 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
             S = np.linalg.cholesky((num_states + self.λ) * P_stable)
         except np.linalg.LinAlgError:
             print(f"Error: Cholesky decomposition failed in _sigma_points even after jitter.")
-            # Fallback to a degenerate set of sigma points (all at the mean)
+            # Fallback: e.g., use SVD or return mean. Returning mean for now.
             chi = np.zeros((2 * num_states + 1, num_states))
             chi[0] = x_mean
             return chi # Degenerate case
@@ -565,10 +473,7 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
 
     # --- Helper functions using explicit nominal state ---
     def _inject_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, delta_x):
-        """
-        Injects an error state (delta_x) into a given nominal state (q_nom, v_nom, etc.)
-        to produce a perturbed absolute state. This is used for sigma point propagation.
-        """
+        """ Injects the error state delta_x into the provided nominal state. """
         delta_theta = delta_x[0:3]
         delta_v     = delta_x[3:6]
         delta_p     = delta_x[6:9]
@@ -587,16 +492,12 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         return q_inj, v_inj, p_inj, ba_inj, bg_inj
 
     def _retract_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, q_inj, v_inj, p_inj, ba_inj, bg_inj):
-        """
-        Retracts an absolute state (q_inj, v_inj, etc.) back to an error state (delta_x)
-        relative to a given nominal state (q_nom, v_nom, etc.). This is the inverse of injection
-        and is used after propagating sigma points.
-        """
+        """ Retracts the injected state back to an error state relative to the provided nominal state. """
         # Ensure nominal quaternion is normalized
         q_nom_norm = q_nom / np.linalg.norm(q_nom)
         q_inj_norm = q_inj / np.linalg.norm(q_inj)
 
-        delta_q = quaternion_multiply(quaternion_conjugate(q_nom_norm), q_inj_norm)
+        delta_q = quaternion_multiply(q_inj_norm, quaternion_conjugate(q_nom_norm))
         delta_q /= np.linalg.norm(delta_q) # Ensure unit quaternion difference
 
         # Convert quaternion difference to angle error vector (SO(3) logarithm)
@@ -626,10 +527,6 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         return delta_x
 
     def _propagate_nominal(self, q, v, p, b_a, b_g, gyro_raw, accel_raw, dt):
-        """
-        Propagates a given nominal state (q, v, p, b_a, b_g) forward in time by dt
-        using IMU measurements (gyro_raw, accel_raw).
-        """
         if dt <= 0:
             # Return current state if dt is invalid
             return q, v, p, b_a, b_g 
@@ -638,7 +535,8 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         accel_corrected = accel_raw - b_a
         gyro_corrected = gyro_raw - b_g
 
-        # Quaternion update using first-order Euler integration
+        # Quaternion update (e.g., Euler integration)
+        # Euler integration:
         dq_dt = 0.5 * np.array([
             -q[1]*gyro_corrected[0] - q[2]*gyro_corrected[1] - q[3]*gyro_corrected[2],
              q[0]*gyro_corrected[0] + q[2]*gyro_corrected[2] - q[3]*gyro_corrected[1],
@@ -648,15 +546,15 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         q_new = q + dq_dt * dt
         q_new /= np.linalg.norm(q_new) # Normalize
 
-        # Rotation matrix from the *new* quaternion
+        # Rotation matrix from the new quaternion
         q_xyzw = convert_quaternion_order(q_new)
         R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
 
         # Velocity and Position update (using trapezoidal integration for better accuracy)
         a_nav_start = R.from_quat(convert_quaternion_order(q)).as_matrix() @ accel_corrected + self.g
         a_nav_end = R_nav_from_body @ accel_corrected + self.g
-        v_new = v + 0.5 * (a_nav_start + a_nav_end) * dt # Trapezoidal rule for velocity
-        p_new = p + v * dt + 0.25 * (a_nav_start + a_nav_end) * dt**2 # More accurate position update
+        v_new = v + 0.5 * (a_nav_start + a_nav_end) * dt
+        p_new = p + v * dt + 0.25 * (a_nav_start + a_nav_end) * dt**2 # More accurate position update using trapezoidal rule for acceleration
 
         # Biases remain constant during propagation in this model
         b_a_new = b_a
@@ -665,11 +563,7 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         return q_new, v_new, p_new, b_a_new, b_g_new
 
     def predict(self, gyro_raw, accel_raw, dt):
-        """
-        Predicts the next state using the Unscented Kalman Filter for the error state.
-        This involves propagating the nominal state and then propagating the error state
-        sigma points through the system dynamics.
-        """
+        """ Predicts the state using UKF for the error state. """
         if dt <= 0:
             return
 
@@ -685,27 +579,27 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         )
         # Update nominal state immediately
         self.q, self.v, self.p = q_new, v_new, p_new
-        self.b_a, self.b_g = ba_new, bg_new # Biases are assumed constant during this propagation step
+        self.b_a, self.b_g = ba_new, bg_new # Biases are constant in _propagate_nominal
 
         # --- (b) UKF Error State Covariance Propagation ---
-        # Calculate necessary components for Qd based on OLD nominal state
+        # Calculate components for Qd based on the nominal state before propagation
         accel_corrected_old = accel_raw - ba_nom_old
         gyro_corrected_old = gyro_raw - bg_nom_old
         q_xyzw_old = convert_quaternion_order(q_nom_old)
         R_nav_from_body_old = R.from_quat(q_xyzw_old).as_matrix()
 
-        # Get discrete process noise Qd using Van Loan on OLD state.
-        # This Qd represents the discretized process noise for the error state dynamics.
+        # Get discrete process noise Qd using Van Loan based on the pre-propagation state
         _, Qd = self._compute_van_loan_matrices(R_nav_from_body_old, accel_corrected_old, gyro_corrected_old, dt)
-        
-        # 1. Generate sigma points for the error state (around zero mean)
-        # Use current covariance P before prediction
+        # Note: Qd from Van Loan method is used as the discrete process noise covariance.
+
+        # 1. Generate sigma points for the error state (mean = 0)
+        # Use current error covariance P
         chi = self._sigma_points(np.zeros(self.n), self.P)
         chi_pred = np.zeros_like(chi)
 
-        # 2. Propagate sigma points through the non-linear dynamics
+        # 2. Propagate sigma points through the non-linear error dynamics
         for i, δx in enumerate(chi):
-            # Inject error sigma point into the *old* nominal state
+            # Inject error sigma point into the pre-propagation nominal state
             q_inj, v_inj, p_inj, ba_inj, bg_inj = self._inject_explicit(q_nom_old, v_nom_old, p_nom_old, ba_nom_old, bg_nom_old, δx)
 
             # Propagate the *injected* state one step
@@ -713,12 +607,9 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
                 q_inj, v_inj, p_inj, ba_inj, bg_inj,
                 gyro_raw, accel_raw, dt
             )
-
-            # Retract the propagated injected state back to an error state relative to the *newly propagated* nominal state
+            # Retract the propagated state to an error state relative to the new nominal state
             chi_pred[i] = self._retract_explicit(self.q, self.v, self.p, self.b_a, self.b_g,
                                                  q_i_pred, v_i_pred, p_i_pred, ba_i_pred, bg_i_pred)
-        # 3. Calculate the predicted error state mean and covariance
-        # The predicted error state mean should be close to zero.
 
         δx_pred_mean = np.sum(self.Wm[:, None] * chi_pred, axis=0)
         delta_chi = chi_pred - δx_pred_mean # Shape (2n+1, n)
@@ -729,48 +620,40 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         self.P = 0.5 * (P_pred + P_pred.T)
 
     def ukf_update_posvel(self, z_meas, R_meas):
-        """
-        Updates the filter state using visual position and velocity measurements (z_meas)
-        via the Unscented Kalman Filter update mechanism. R_meas is the measurement noise
-        covariance.
-        """
+        """ Updates the state using visual position and velocity measurements via UKF. """
         # z_meas: 6x1 vector [p_meas, v_meas]
         # R_meas: 6x6 measurement noise covariance matrix
 
-        # 1. Generate sigma points for the current error state (mean=0, cov=P)
+        # 1. Generate sigma points for the current error state (mean=0, covariance=P)
         chi = self._sigma_points(np.zeros(self.n), self.P)
         
-        # 2. Propagate sigma points through the measurement function h(x)
-        #    h(x) extracts position and velocity from the full state obtained by injecting dx
-        #    The measurement function h(x) effectively extracts position and velocity
-        #    from the full state obtained by injecting the error sigma point dx.
-        Zsig = np.zeros((2 * self.n + 1, 6)) # Transformed sigma points in measurement space
+        # 2. Transform sigma points through the measurement function h(delta_x)
+        #    h(delta_x) extracts position and velocity from the full state (nominal + delta_x)
+        Zsig = np.zeros((2 * self.n + 1, 6)) # Transformed sigma points in measurement space (3 pos + 3 vel)
         for i, δx in enumerate(chi):
-            # Inject error into current nominal state (self.q, self.v, ...)
+            # Inject error sigma point into the current nominal state
             q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
                 self.q, self.v, self.p, self.b_a, self.b_g, δx
             )
-            # The measurement is simply the position and velocity of the injected state
+            # The predicted measurement is the position and velocity of the injected state
             Zsig[i, :3] = p_i
             Zsig[i, 3:] = v_i
 
-        # 3. Calculate predicted measurement mean
+        # 3. Calculate predicted measurement mean from transformed sigma points
         z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
 
-        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz
+        # 4. Calculate innovation covariance S (Pzz) and state-measurement cross-covariance Pxz
         delta_Z = Zsig - z_pred # Shape (2n+1, 6)
-        # Error sigma points are already relative to zero mean for the error state
-        delta_chi = chi # Shape (2n+1, n)
+        delta_chi = chi - np.zeros(self.n) # Shape (2n+1, n); error state mean is zero
 
         Pzz = R_meas + np.sum(self.Wc[:, None, None] *
                               delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
 
         Pxz = np.sum(self.Wc[:, None, None] *
                      delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
-
         # 5. Calculate Kalman Gain K
         try:
-            # Use pseudo-inverse for robustness against potentially ill-conditioned Pzz
+            # Use pseudo-inverse for potentially ill-conditioned S (Pzz)
             Pzz_inv = np.linalg.pinv(Pzz) 
         except np.linalg.LinAlgError:
             print("Warning: UKF Vision Pzz matrix is singular! Skipping update.")
@@ -778,35 +661,30 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         
         K = Pxz @ Pzz_inv # Shape (n, 6)
 
-        # 6. Calculate corrected error state
+        # 6. Calculate corrected error state estimate
         residual = z_meas - z_pred
         δx_corr = K @ residual # Shape (n,)
 
-        # 7. Update state covariance P
+        # 7. Update error state covariance P (Joseph form for stability)
         P_updated = self.P - K @ Pzz @ K.T
         # Ensure P remains symmetric and positive semi-definite
         self.P = 0.5 * (P_updated + P_updated.T) 
-
-        # 8. Update nominal state using the common update function from base class
+        # 8. Update nominal state with the corrected error state
         self._update_common(δx_corr)
 
     def zero_velocity_update(self): # Override for UKF
-        """
-        Performs a Zero Velocity Update (ZUPT) using the UKF mechanism.
-        The measurement is zero velocity in the body frame, and the measurement function
-        involves the orientation (non-linear).
-        """
+        """ Updates the state using Zero Velocity Update (ZUPT) via UKF. """
         # Measurement is zero velocity in the body frame.
         z_meas = np.zeros(3)
         R_meas = self.R_zupt # Use pre-defined ZUPT noise
 
-        # 1. Generate sigma points
+        # 1. Generate sigma points for the current error state
         chi = self._sigma_points(np.zeros(self.n), self.P)
         
-        # 2. Propagate sigma points through measurement function h(x) = R_body_from_nav(q) @ v
-        Zsig = np.zeros((2 * self.n + 1, 3)) # Transformed sigma points in measurement space (body velocity)
+        # 2. Transform sigma points through measurement function h(delta_x) = R_body_from_nav(q_nominal (+) delta_theta) @ (v_nominal + delta_v)
+        Zsig = np.zeros((2 * self.n + 1, 3)) # Transformed sigma points in measurement space (3 body-frame velocity components)
         for i, δx in enumerate(chi):
-            # Inject error into current nominal state
+            # Inject error sigma point into the current nominal state
             q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
                 self.q, self.v, self.p, self.b_a, self.b_g, δx
             )
@@ -816,17 +694,15 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
             R_body_from_nav_i = R_nav_from_body_i.T
             # Measurement function: velocity in body frame
             Zsig[i, :] = R_body_from_nav_i @ v_i
-
-        # 3. Calculate predicted measurement mean
+        # 3. Calculate predicted measurement mean from transformed sigma points
         z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
 
-        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz
+        # 4. Calculate innovation covariance S (Pzz) and state-measurement cross-covariance Pxz
         delta_Z = Zsig - z_pred # Shape (2n+1, 3)
-        delta_chi = chi # Shape (2n+1, n), error sigma points relative to zero mean
+        delta_chi = chi - np.zeros(self.n) # Shape (2n+1, n)
 
         Pzz = R_meas + np.sum(self.Wc[:, None, None] *
                               delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
-
         Pxz = np.sum(self.Wc[:, None, None] *
                      delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
 
@@ -839,35 +715,30 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
         
         K = Pxz @ Pzz_inv # Shape (n, 3)
 
-        # 6. Calculate corrected error state
-        residual = z_meas - z_pred # Residual: 0 - predicted body velocity
+        # 6. Calculate corrected error state estimate
+        residual = z_meas - z_pred # Residual: (target zero velocity) - (predicted body velocity)
         δx_corr = K @ residual # Shape (n,)
 
-        # 7. Update state covariance P
+        # 7. Update error state covariance P
         P_updated = self.P - K @ Pzz @ K.T
         self.P = 0.5 * (P_updated + P_updated.T)
 
-        # 8. Update nominal state
+        # 8. Update nominal state with the corrected error state
         self._update_common(δx_corr)
 
     def gravity_update(self, accel_raw): # Override for UKF, takes accel_raw
-        """
-        Updates accelerometer bias using gravity measurement via UKF during static periods.
-        The measurement is the raw accelerometer reading. The measurement function involves
-        transforming the gravity vector into the body frame using the orientation,
-        making it non-linear.
-        """
+        """ Updates the accelerometer bias using gravity measurement via UKF during static periods. """
         # Measurement is the raw accelerometer reading
         z_meas = accel_raw
         # Measurement noise is accelerometer white noise
         R_meas = (self.sigma_a**2) * np.eye(3)
 
-        # 1. Generate sigma points
+        # 1. Generate sigma points for the current error state
         chi = self._sigma_points(np.zeros(self.n), self.P)
 
-        # 2. Propagate sigma points through measurement function
-        # h(x) = R_body_from_nav(q) @ (-g_nav) + b_a
-        Zsig = np.zeros((2 * self.n + 1, 3)) # Transformed sigma points (expected accelerometer reading)
+        # 2. Transform sigma points through the measurement function
+
+        Zsig = np.zeros((2 * self.n + 1, 3)) # Transformed sigma points in measurement space (3 accelerometer components)
         for i, δx in enumerate(chi):
             q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
                 self.q, self.v, self.p, self.b_a, self.b_g, δx
@@ -878,19 +749,18 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
             R_body_from_nav_i = R_nav_from_body_i.T
             # Expected gravity vector in body frame for this sigma point
             g_body_i = R_body_from_nav_i @ (-self.g)
-            # Measurement function: expected accel reading = g_body + bias
+            # Measurement function: expected accel reading = g_body + accel_bias
             Zsig[i, :] = g_body_i + ba_i
 
-        # 3. Calculate predicted measurement mean (expected accel reading)
+        # 3. Calculate predicted measurement mean (expected accelerometer reading)
         z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
 
-        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz
+        # 4. Calculate innovation covariance S (Pzz) and state-measurement cross-covariance Pxz
         delta_Z = Zsig - z_pred # Shape (2n+1, 3)
-        delta_chi = chi # Shape (2n+1, n), error sigma points relative to zero mean
+        delta_chi = chi - np.zeros(self.n) # Shape (2n+1, n)
 
         Pzz = R_meas + np.sum(self.Wc[:, None, None] *
                               delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
-
         Pxz = np.sum(self.Wc[:, None, None] *
                      delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
 
@@ -903,52 +773,41 @@ class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
 
         K = Pxz @ Pzz_inv # Shape (n, 3)
 
-        # 6. Calculate corrected error state
-        residual = z_meas - z_pred # Residual: actual accel - expected accel
+        # 6. Calculate corrected error state estimate
+        residual = z_meas - z_pred # Residual: (actual accelerometer reading) - (expected accelerometer reading)
         δx_corr = K @ residual # Shape (n,)
 
-        # 7. Update state covariance P
+        # 7. Update error state covariance P
         P_updated = self.P - K @ Pzz @ K.T
         self.P = 0.5 * (P_updated + P_updated.T)
 
-        # 8. Update nominal state
+        # 8. Update nominal state with the corrected error state
         self._update_common(δx_corr)
 
-# === H I B R I T  F I L T R E  S I N I F I ==========================
+# === H Y B R I D  F I L T E R  C L A S S ==========================
 class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
-    # IMPORTANT NOTE: Despite the class name "ErrorStateKalmanFilterVIO_Hybrid",
-    # this implementation in "main_sukf.py" functions as a FULL Unscented Kalman Filter (UKF)
-    # for the entire 15-dimensional error state. It overrides the prediction and update
-    # methods of the base ESKF class with UKF logic.
     """
-    Implements a full Unscented Kalman Filter (UKF) for the 15-dimensional error state
-    [delta_theta, delta_v, delta_p, delta_b_a, delta_b_g] in a VIO context.
-    This class inherits from a base ESKF but replaces its core filtering mechanisms
-    with the UKF approach (sigma point propagation, unscented transform for updates)
-    to better handle system non-linearities.
+    Hybrid error-state filter using UKF for delta_theta and ESKF for the remaining 12 dimensions.
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs) # Initialize base ESKF components (state, noise params)
+        super().__init__(*args, **kwargs)        # Initialize ESKF components
 
-        # --- UKF Parameters for the full 15D error state ---
-        self.n = 15                # Full error-state dimension
-        self.α = 0.5               # UKF scaling parameter alpha
-        self.β = 2.0               # UKF scaling parameter beta (optimal for Gaussian)
-        self.κ = 3 - self.n        # UKF scaling parameter kappa
+        # --- UKF Parameters ---
+        self.n = 15                # error-state dimension [dq, dv, dp, dba, dbg]
+        self.α = 0.5               # SUT scaling parameter alpha
+        self.β = 2.0               # SUT scaling parameter beta (optimal for Gaussian)
+        self.κ = 3 - self.n        # SUT scaling parameter kappa (Merwe önerisi: 3-n)
         self.λ = self.α**2 * (self.n + self.κ) - self.n # Composite scaling parameter lambda
         
-        # Sigma point weights for mean and covariance (Merwe's Scaled Unscented Transform)
+        # Sigma point weights (Merwe's Scaled Unscented Transform)
         self.Wm = np.full(2 * self.n + 1, 1.0 / (2 * (self.n + self.λ))) # Weights for mean
         self.Wc = np.full(2 * self.n + 1, 1.0 / (2 * (self.n + self.λ))) # Weights for covariance
         self.Wm[0] = self.λ / (self.n + self.λ)                         # Weight for mean (center point)
         self.Wc[0] = self.Wm[0] + (1 - self.α**2 + self.β)             # Weight for covariance (center point)
 
-    # --- Helper functions needed from UKF (copied or adapted) ---
+    # --- Helper functions for UKF ---
     def _sigma_points(self, x_mean, P):
-        """
-        Generates sigma points for the Unscented Transform based on the error-state
-        mean (typically zero) and covariance P.
-        """
+        """ Generates sigma points for the UKF based on mean and covariance. """
         num_states = P.shape[0] 
         if num_states != self.n:
              print(f"Warning: P matrix size {P.shape} does not match state size {self.n} in _sigma_points")
@@ -972,10 +831,7 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         return chi
 
     def _inject_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, delta_x):
-        """
-        Injects an error state (delta_x) into a given nominal state (q_nom, v_nom, etc.)
-        to produce a perturbed absolute state for sigma point propagation.
-        """
+        """ Injects the error state delta_x into the provided nominal state. """
         delta_theta = delta_x[0:3]
         delta_v     = delta_x[3:6]
         delta_p     = delta_x[6:9]
@@ -995,11 +851,7 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
 
     # ---------------- P R E D I C T (Full UKF Logic) --------------------
     def predict(self, gyro_raw, accel_raw, dt):
-        """
-        Predicts the next state using the Unscented Kalman Filter for the full error state.
-        This involves propagating the nominal state and then propagating the error state
-        sigma points through the system dynamics using the unscented transform.
-        """
+        """ Predicts the state using UKF for the error state. """
         if dt <= 0:
             return
 
@@ -1015,16 +867,13 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         self.b_a, self.b_g = ba_new, bg_new
 
         # --- (b) UKF Error State Covariance Propagation ---
-        # Calculate components for Qd based on the *old* nominal state, consistent with ESKF theory.
         accel_corrected_old = accel_raw - ba_nom_old
         gyro_corrected_old = gyro_raw - bg_nom_old
         q_xyzw_old = convert_quaternion_order(q_nom_old)
         R_nav_from_body_old = R.from_quat(q_xyzw_old).as_matrix()
 
-        # Discrete process noise for the error state dynamics.
         _, Qd = self._compute_van_loan_matrices(R_nav_from_body_old, accel_corrected_old, gyro_corrected_old, dt)
 
-        # 1. Generate sigma points for the current error state (centered around zero mean).
         chi = self._sigma_points(np.zeros(self.n), self.P)
         chi_pred = np.zeros_like(chi)
 
@@ -1036,31 +885,21 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
                 gyro_raw, accel_raw, dt
             )
 
-            # Retract the propagated injected state back to an error state relative to the *newly propagated* nominal state.
             chi_pred[i] = self._retract_explicit(self.q, self.v, self.p, self.b_a, self.b_g,
                                                  q_i_pred, v_i_pred, p_i_pred, ba_i_pred, bg_i_pred)
-        # 3. Calculate the predicted error state mean and covariance.
-        # The predicted error state mean should ideally be close to zero.
+
         δx_pred_mean = np.sum(self.Wm[:, None] * chi_pred, axis=0)
         delta_chi = chi_pred - δx_pred_mean 
         P_pred = Qd + np.sum(self.Wc[:, None, None] *
                              delta_chi[..., None] @ delta_chi[:, None, :], axis=0)
-        # Ensure P remains symmetric.
+
         self.P = 0.5 * (P_pred + P_pred.T)
 
-    # _propagate_nominal and _retract_explicit are essential helper functions for the UKF predict step.
-    # These versions are consistent with a full UKF implementation.
-    # or confirm they are the same as UKF's versions.
-    # The existing _propagate_nominal and _retract_explicit in Hybrid seem to match UKF's.
-
-    # --- Retained Helper functions (already copied from UKF in original Hybrid) ---
-    def _propagate_nominal(self, q, v, p, b_a, b_g, gyro_raw, accel_raw, dt): # Retained
+    # --- Helper functions for nominal state propagation and retraction ---
+    def _propagate_nominal(self, q, v, p, b_a, b_g, gyro_raw, accel_raw, dt):
+        """ Propagates a given nominal state using IMU measurements. """
         if dt <= 0:
             return q, v, p, b_a, b_g
-        """
-        Propagates a given nominal state (q, v, p, b_a, b_g) forward by dt
-        using IMU measurements. This is a helper for sigma point propagation.
-        """
         accel_corrected = accel_raw - b_a
         gyro_corrected = gyro_raw - b_g
         dq_dt = 0.5 * np.array([
@@ -1081,14 +920,11 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         b_g_new = b_g
         return q_new, v_new, p_new, b_a_new, b_g_new
 
-    def _retract_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, q_inj, v_inj, p_inj, ba_inj, bg_inj): # Retained
-        """
-        Retracts an absolute state (q_inj, v_inj, etc.) back to an error state (delta_x)
-        relative to a given nominal state (q_nom, v_nom, etc.). Inverse of injection.
-        """
+    def _retract_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, q_inj, v_inj, p_inj, ba_inj, bg_inj):
+        """ Retracts an injected state back to an error state relative to a nominal state. """
         q_nom_norm = q_nom / np.linalg.norm(q_nom)
         q_inj_norm = q_inj / np.linalg.norm(q_inj)
-        delta_q = quaternion_multiply(quaternion_conjugate(q_nom_norm), q_inj_norm)
+        delta_q = quaternion_multiply(q_inj_norm, quaternion_conjugate(q_nom_norm))
         delta_q /= np.linalg.norm(delta_q)
         if delta_q[0] < 0: delta_q = -delta_q
         cos_half_angle = np.clip(delta_q[0], -1.0, 1.0 - 1e-12)
@@ -1108,20 +944,14 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         return delta_x
     # --- End of copied helper functions ---
     
-    # --------- Ölçüm: görsel p,v  (Full UKF Logic) -----------
+    # --------- Measurement: visual p,v (Full UKF Logic) -----------
     def vision_posvel_update(self, p_meas, v_meas, R_vision):
-        """
-        Updates the filter state using visual position and velocity measurements via the UKF.
-        The measurement model extracts position and velocity from the sigma points.
-        R_vision is the measurement noise covariance.
-        """
+        """ Updates the state using visual position and velocity measurements via UKF. """
         z_meas = np.concatenate([p_meas, v_meas]) # Measurement: [p_meas, v_meas]
         R_meas = R_vision # Measurement noise covariance
 
-        # 1. Generate sigma points for the current error state.
         chi = self._sigma_points(np.zeros(self.n), self.P)
         
-        # 2. Propagate sigma points through the measurement function h(x).
         Zsig = np.zeros((2 * self.n + 1, 6)) 
         for i, δx in enumerate(chi):
             q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
@@ -1130,13 +960,11 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
             Zsig[i, :3] = p_i
             Zsig[i, 3:] = v_i
 
-        # 3. Calculate predicted measurement mean.
         z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
 
-        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz.
         delta_Z = Zsig - z_pred 
         delta_chi = chi - np.zeros(self.n) 
-        
+
         Pzz = R_meas + np.sum(self.Wc[:, None, None] *
                               delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
 
@@ -1144,7 +972,6 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
                      delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
 
         try:
-            # 5. Calculate Kalman Gain K.
             Pzz_inv = np.linalg.pinv(Pzz) 
         except np.linalg.LinAlgError:
             print("Warning: UKF Vision Pzz matrix is singular! Skipping update.")
@@ -1152,37 +979,28 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         
         K = Pxz @ Pzz_inv 
 
-        # 6. Calculate corrected error state.
         residual = z_meas - z_pred
         δx_corr = K @ residual 
 
-        # 7. Update state covariance P.
         P_updated = self.P - K @ Pzz @ K.T
         self.P = 0.5 * (P_updated + P_updated.T) 
 
-        # 8. Update nominal state.
         self._update_common(δx_corr)
 
-    # --------- Ölçüm: ZUPT (Full UKF Logic) -----------------
+    # --------- Measurement: ZUPT (Full UKF Logic) -----------------
     def zero_velocity_update(self):
-        """
-        Performs a Zero Velocity Update (ZUPT) using the UKF mechanism.
-        The measurement is zero velocity in the body frame; the measurement function
-        involves the orientation, making it non-linear.
-        """
+        """ Updates the state using Zero Velocity Update (ZUPT) via UKF. """
         z_meas = np.zeros(3)
         R_meas = self.R_zupt 
 
-        # 1. Generate sigma points.
         chi = self._sigma_points(np.zeros(self.n), self.P)
         
-        # 2. Propagate sigma points through measurement function h(x) = R_body_from_nav(q) @ v.
         Zsig = np.zeros((2 * self.n + 1, 3)) 
         for i, δx in enumerate(chi):
             q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
                 self.q, self.v, self.p, self.b_a, self.b_g, δx
             )
-            q_xyzw_i = convert_quaternion_order(q_i) # Convert to [x,y,z,w] for SciPy
+            q_xyzw_i = convert_quaternion_order(q_i)
             R_nav_from_body_i = R.from_quat(q_xyzw_i).as_matrix()
             R_body_from_nav_i = R_nav_from_body_i.T
             Zsig[i, :] = R_body_from_nav_i @ v_i
@@ -1190,9 +1008,8 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
 
         delta_Z = Zsig - z_pred 
-        delta_chi = chi # Error sigma points are already relative to zero mean.
+        delta_chi = chi - np.zeros(self.n) 
 
-        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz.
         Pzz = R_meas + np.sum(self.Wc[:, None, None] *
                               delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
 
@@ -1200,7 +1017,6 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
                      delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
 
         try:
-            # 5. Calculate Kalman Gain K.
             Pzz_inv = np.linalg.pinv(Pzz)
         except np.linalg.LinAlgError:
             print("Warning: UKF ZUPT Pzz matrix is singular! Skipping update.")
@@ -1208,36 +1024,26 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         
         K = Pxz @ Pzz_inv 
         residual = z_meas - z_pred 
-        # 6. Calculate corrected error state.
         δx_corr = K @ residual 
 
-        # 7. Update state covariance P.
         P_updated = self.P - K @ Pzz @ K.T
         self.P = 0.5 * (P_updated + P_updated.T)
 
-        # 8. Update nominal state.
         self._update_common(δx_corr)
 
-    # --------- Ölçüm: Gravity Update (Full UKF Logic) -----------
+    # --------- Measurement: Gravity Update (Full UKF Logic) -----------
     def gravity_update(self, accel_raw): 
-        """
-        Updates accelerometer bias using gravity measurement via UKF during static periods.
-        The measurement is the raw accelerometer reading. The measurement function,
-        h(x) = R_body_from_nav(q) @ (-g_nav) + b_a, is non-linear due to orientation.
-        """
+        """ Updates the accelerometer bias using gravity measurement via UKF. """
         z_meas = accel_raw
         R_meas = (self.sigma_a**2) * np.eye(3)
 
-        # 1. Generate sigma points.
         chi = self._sigma_points(np.zeros(self.n), self.P)
-
-        # 2. Propagate sigma points through measurement function.
         Zsig = np.zeros((2 * self.n + 1, 3)) 
         for i, δx in enumerate(chi):
             q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
                 self.q, self.v, self.p, self.b_a, self.b_g, δx
             )
-            q_xyzw_i = convert_quaternion_order(q_i) # Convert for SciPy
+            q_xyzw_i = convert_quaternion_order(q_i)
             R_nav_from_body_i = R.from_quat(q_xyzw_i).as_matrix()
             R_body_from_nav_i = R_nav_from_body_i.T
             g_body_i = R_body_from_nav_i @ (-self.g)
@@ -1245,9 +1051,8 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
 
         z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
         delta_Z = Zsig - z_pred 
-        delta_chi = chi # Error sigma points are relative to zero mean.
+        delta_chi = chi - np.zeros(self.n) 
 
-        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz.
         Pzz = R_meas + np.sum(self.Wc[:, None, None] *
                               delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
         Pxz = np.sum(self.Wc[:, None, None] *
@@ -1255,7 +1060,6 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
 
         try:
             Pzz_inv = np.linalg.pinv(Pzz)
-            # 5. Calculate Kalman Gain K.
         except np.linalg.LinAlgError:
             print("Warning: UKF Gravity Pzz matrix is singular! Skipping update.")
             return
@@ -1263,20 +1067,15 @@ class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
         K = Pxz @ Pzz_inv 
         residual = z_meas - z_pred 
         δx_corr = K @ residual 
-        # 6. Calculate corrected error state.
 
-        # 7. Update state covariance P.
         P_updated = self.P - K @ Pzz @ K.T
         self.P = 0.5 * (P_updated + P_updated.T)
-        # 8. Update nominal state.
         self._update_common(δx_corr)
 
 # =========================================================
-# CSV Sonuç ve Özet Fonksiyonları
+# CSV Result and Summary Functions
 # =========================================================
 def save_results_to_csv(results, filename):
-    """Saves detailed trajectory and bias estimation results to a CSV file."""
-
     data = {
         "#timestamp [ns]": results["timestamps"],
         " q_RS_w []": results["estimated_quaternions"][:,0],
@@ -1299,7 +1098,6 @@ def save_results_to_csv(results, filename):
     pd.DataFrame(data).to_csv(filename, index=False)
 
 def save_summary_to_csv(results, seq_name, args, filename):
-    """Appends a summary of RMSE results and configuration parameters to a CSV file."""
     summary = {
        "Sequence": seq_name,
        "Alpha_v": args.alpha_v, 
@@ -1330,13 +1128,10 @@ def save_summary_to_csv(results, seq_name, args, filename):
         df_summary.to_csv(filename, index=False, mode="w", header=True)
 
 # =========================================================
-# ESKF Tabanlı VIO Verisi İşleme Fonksiyonu
+# ESKF-based VIO Data Processing Function
 # =========================================================
 def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
-    """
-    Processes VIO data from IMU and visual measurements using the UKF-ESKF.
-    Handles data loading, filter initialization, main processing loop, and RMSE calculation.
-    """
+    # File reading (similar to previous version, basic error handling)
     imu_data = pd.read_csv(imu_file)
     imu_data['timestamp'] = pd.to_datetime(imu_data['#timestamp [ns]'], unit='ns')
     imu_data['dt'] = imu_data['timestamp'].diff().dt.total_seconds()
@@ -1358,6 +1153,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             imu_data[c] = 0.0
         imu_data[c] = pd.to_numeric(imu_data[c], errors='coerce')
 
+    # File reading (similar to previous version, basic error handling)
     visual_data = pd.read_csv(visual_file)
     visual_data['timestamp'] = pd.to_datetime(visual_data['#timestamp [ns]'], unit='ns')
     for c in [' p_RS_R_x [m]', ' p_RS_R_y [m]', ' p_RS_R_z [m]']:
@@ -1366,7 +1162,6 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         visual_data[c] = pd.to_numeric(visual_data[c], errors='coerce')
     visual_data = visual_data.sort_values(by='timestamp').reset_index(drop=True)
 
-    # Initialize filter with first IMU reading or default values
     initial_quaternion = imu_data[[' q_RS_w []', ' q_RS_x []',' q_RS_y []',' q_RS_z []']].iloc[0].values
     initial_velocity   = imu_data[[' v_RS_R_x [m s^-1]', ' v_RS_R_y [m s^-1]', ' v_RS_R_z [m s^-1]']].iloc[0].values
     if ' p_RS_R_x [m]' in imu_data.columns:
@@ -1387,8 +1182,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         imu_data[' b_a_RS_S_z [m s^-2]'].iloc[0]
     ]) if all(c in imu_data.columns for c in [' b_a_RS_S_x [m s^-2]', ' b_a_RS_S_y [m s^-2]', ' b_a_RS_S_z [m s^-2]']) else np.zeros(3)
 
-    # Instantiate the UKF-based filter (referred to as "Hybrid" in class name, but functions as full UKF).
-    # This is the core of the VIO system, performing sensor fusion.
+    # --- Instantiate the Hybrid filter ---
     eskf = ErrorStateKalmanFilterVIO_Hybrid(initial_quaternion, initial_velocity, initial_position,
                                             initial_accel_bias=initial_accel_bias,
                                             initial_gyro_bias=initial_gyro_bias)
@@ -1412,17 +1206,16 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     true_gyro_biases = []
     q_prev = initial_quaternion.copy()
 
-    # Parameters for Zero-Velocity Update (ZUPT) based static detection
+    # --- ZUPT settings ---
     WIN_LEN_STATIC  = args.zupt_win          
     ACC_STD_THR     = args.zupt_acc_thr      
     GYRO_STD_THR    = args.zupt_gyro_thr     
     accel_window = deque(maxlen=WIN_LEN_STATIC)
     gyro_window  = deque(maxlen=WIN_LEN_STATIC) 
-    total_static_duration = 0.0 # Tracks total time ZUPT/Gravity updates are active.
-
+    total_static_duration = 0.0      
     for i, row in imu_data.iterrows():
         dt = row['dt']
-        if dt <= 0: continue # Geçerli dt kontrolü
+        if dt <= 0: continue # Valid dt check
         
         gyro_raw = np.array([
             row['w_RS_S_x [rad s^-1]'],
@@ -1435,36 +1228,35 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             row['a_RS_S_z [m s^-2]']
         ], dtype=float)
 
-        # Perform filter prediction step using IMU data. This invokes the UKF prediction.
+        # Prediction step (with raw IMU data)
         eskf.predict(gyro_raw, accel_raw, dt)
         current_time = row['timestamp']
 
-        # Static detection logic for ZUPT and Gravity updates
+        # --- Statik tespiti & ZUPT / Gravity update ---
+        # --- Static detection & ZUPT / Gravity update ---
         accel_window.append(accel_raw)
         gyro_window.append(gyro_raw)
 
         if len(accel_window) == WIN_LEN_STATIC:
-            # Calculate standard deviation of accelerometer and gyroscope norms over the window
+            # Standard deviation of acceleration norm is used for static detection.
             accel_data_stack = np.vstack(accel_window)
             acc_norm = np.linalg.norm(accel_data_stack, axis=1)
             acc_norm_std = acc_norm.std()
 
+            # Standard deviation of gyroscope norm.
             gyro_data_stack = np.vstack(gyro_window)
             g_norm   = np.linalg.norm(gyro_data_stack, axis=1)
-            gyro_norm_std = g_norm.std()
-
-
+            gyro_norm_std = g_norm.std() # Gyro norm std dev
             if (acc_norm_std < ACC_STD_THR) and (gyro_norm_std < GYRO_STD_THR):
                 eskf.zero_velocity_update()
-                eskf.gravity_update(accel_raw) # Use current raw acceleration for gravity update
-                window_duration = WIN_LEN_STATIC * dt # Yaklaşık pencere süresi
+                eskf.gravity_update(accel_raw) 
+                window_duration = WIN_LEN_STATIC * dt # Approximate window duration
                 total_static_duration += window_duration
 
                 accel_window.clear()
                 gyro_window.clear()
 
-        # Görsel ölçüm güncellemesi (varsa)
-        # Process visual measurements if available up to the current IMU time
+        # Visual measurement update (if available)
         while (visual_index < max_visual_index and
                (visual_data.loc[visual_index, 'timestamp'] <= current_time)):
 
@@ -1480,7 +1272,6 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             fixed_sigma_v = None
             sigma_p_val = None
 
-            # Retrieve adaptive sigma_v, if enabled and available for the current visual timestamp
             if sigma_v_map and len(sigma_v_map) > 0:
                 if t_vis_ns in sigma_v_map:
                     fixed_sigma_v = sigma_v_map[t_vis_ns]
@@ -1492,10 +1283,10 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                         if diff < min_diff:
                             min_diff = diff
                             chosen_key = k
-                    # Match with a tolerance (e.g., 2ms)
-                    if chosen_key is not None and min_diff < 2e6: #(2ms)
+                    # Time matching tolerance for visual data (2ms).
+                    if chosen_key is not None and min_diff < 2e6: # (2ms tolerance)
                         fixed_sigma_v = sigma_v_map[chosen_key]
-            # Retrieve adaptive sigma_p, if enabled and available
+
             if sigma_p_map and len(sigma_p_map) > 0:
                 if t_vis_ns in sigma_p_map:
                     sigma_p_val = sigma_p_map[t_vis_ns]
@@ -1507,29 +1298,28 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                         if diff < min_diff:
                             min_diff = diff
                             chosen_key = k
-                    if chosen_key is not None and min_diff < 2e6: # Match with a tolerance (e.g., 2ms)
+                    if chosen_key is not None and min_diff < 2e6: # (2ms tolerance)
                         sigma_p_val = sigma_p_map[chosen_key]
 
             
-            # Visual velocity is derived from consecutive position measurements.
-            v_meas_to_use = eskf.v # Default to current filter velocity if dt_vis is too small
+            # --- Logic for calculating velocity from consecutive visual positions ---
+            v_meas_to_use = eskf.v # Default (for an ineffective update if dt_vis is too small)
             dt_vis = 0.0
             if prev_vis_time is not None and prev_vis_pos is not None:
                 dt_vis = (t_vis - prev_vis_time).total_seconds()
-                if dt_vis > 1e-9: # Avoid division by zero or very small dt
+                if dt_vis > 1e-9: # Avoid very small dt_vis
                     v_meas_to_use = (p_meas - prev_vis_pos) / dt_vis
-            
-            # Construct the measurement noise covariance R_vision for this update
+
             I3 = np.eye(3)
             current_sigma_p_sq = eskf.R_vis_6d[0,0] # (fixed_sigma_p**2)
             current_sigma_v_sq = eskf.R_vis_6d[3,3] # (fixed_sigma_v**2)
-
             if sigma_p_val is not None:
                 current_sigma_p_sq = sigma_p_val**2
-            
-            # If adaptive sigma_v is computed, use it.
-            if fixed_sigma_v is not None: # fixed_sigma_v is from the adaptive sigma_v computation
+
+            # If using sigma_v from adaptive_sigma_v independently, not derived from sigma_p:
+            if fixed_sigma_v is not None: # fixed_sigma_v comes from sigma_v_map
                 current_sigma_v_sq = fixed_sigma_v**2
+
 
             R_vision_current = np.block([
                 [current_sigma_p_sq * I3, np.zeros((3,3))],
@@ -1537,7 +1327,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             ])
 
             eskf.vision_posvel_update(p_meas, v_meas_to_use, R_vision_current)
-            # Store current visual measurement for next velocity calculation
+
             prev_vis_pos = p_meas
             prev_vis_time = t_vis
             visual_index += 1
@@ -1550,8 +1340,8 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         estimated_gyro_biases.append(eskf.b_g.copy())  
         timestamps.append(row['timestamp'].value)
 
-        q_prev = q_est # Store for quaternion continuity check in the next iteration
-        # Store ground truth data if available for RMSE calculation
+        q_prev = q_est
+
         if all(col in imu_data.columns for col in [' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []']):
             q_gt = row[[' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []']].values
         else:
@@ -1585,7 +1375,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         true_accel_biases.append(ba_gt) 
         true_gyro_biases.append(bg_gt)  
 
-    # Convert result lists to NumPy arrays for efficient processing
+    # --- Convert results to NumPy arrays ---
     estimated_quaternions = np.array(estimated_quaternions, dtype=float)
     estimated_velocities = np.array(estimated_velocities, dtype=float)
     estimated_positions = np.array(estimated_positions, dtype=float)
@@ -1599,8 +1389,9 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     true_accel_biases = np.array(true_accel_biases, dtype=float)
     true_gyro_biases = np.array(true_gyro_biases, dtype=float)
 
-    # --- Root Mean Squared Error (RMSE) Computation for Performance Evaluation ---
+    # --- RMSE Hesaplamaları ---
     estimated_euler_raw = np.array([quaternion_to_euler(q) for q in estimated_quaternions])
+    # NaN kontrolü true_quaternions üzerinde yapılmalı, true_euler_raw hesaplanırken değil.
     valid_true_q_indices_for_euler = ~np.isnan(true_quaternions).any(axis=1)
     true_euler_raw = np.array([quaternion_to_euler(q) for q in true_quaternions[valid_true_q_indices_for_euler] if not np.isnan(q).any()])
 
@@ -1614,9 +1405,8 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     rmse_bg = None
     estimated_euler_deg = estimated_euler_raw 
     true_euler_deg = true_euler_raw
-    
-    # Calculate RMSE if ground truth is available and valid
-    if min_len > 0: # Ensure there is data to compare
+
+    if min_len > 0:
         valid_gt_indices = np.where(
             ~np.isnan(true_quaternions[:min_len]).any(axis=1) &
             ~np.isnan(true_velocities[:min_len]).any(axis=1) &
@@ -1625,7 +1415,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             ~np.isnan(true_gyro_biases[:min_len]).any(axis=1)
         )[0]
 
-        if len(valid_gt_indices) > 0: # Ensure there are valid ground truth entries
+        if len(valid_gt_indices) > 0:
             min_len_valid = len(valid_gt_indices)
             est_q_valid = estimated_quaternions[valid_gt_indices]
             true_q_valid = true_quaternions[valid_gt_indices]
@@ -1638,7 +1428,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             est_bg_valid = estimated_gyro_biases[valid_gt_indices]
             true_bg_valid = true_gyro_biases[valid_gt_indices]
 
-            # Quaternion Angular RMSE (adapted from plots.py and in degrees)
+            # Quaternion Angular RMSE (adapted from plots.py, in degrees)
             aligned_quaternions_for_angular_rmse = align_quaternions(est_q_valid, true_q_valid)
             
             delta_q_array = [quaternion_multiply(qe, quaternion_conjugate(qg)) 
@@ -1646,24 +1436,26 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             
             angles_rad_list = []
             for delta_q_val in delta_q_array:
-                # Ensure the scalar part (w) is positive and clipped for arccos stability
+                # Taking the absolute value of the w component and clipping is important
                 cos_half_angle = np.clip(abs(delta_q_val[0]), -1.0, 1.0) 
                 angle_rad = 2 * np.arccos(cos_half_angle)
                 angles_rad_list.append(angle_rad)
             
             angles_deg_array = np.array(angles_rad_list) * 180.0 / np.pi
-            # RMSE of these angular errors (target error is 0 degrees)
+            # RMSE of angular errors (direct RMSE as target error is 0 degrees)
             rmse_quat_angular_deg = np.sqrt(np.mean(angles_deg_array**2))
 
             est_euler_deg_valid = np.array([quaternion_to_euler(q) for q in aligned_quaternions_for_angular_rmse])
             true_euler_deg_valid = np.array([quaternion_to_euler(q) for q in true_q_valid])
 
             # Ensure angle continuity (unwrap)
-            est_euler_deg_valid_unwrapped = ensure_angle_continuity(est_euler_deg_valid, threshold=180)
-            true_euler_deg_valid_unwrapped = ensure_angle_continuity(true_euler_deg_valid, threshold=180) # Ensure continuity for true Euler angles as well
+            est_euler_deg_valid_unwrapped = ensure_angle_continuity(est_euler_deg_valid, threshold=180) # threshold=180 (degrees) instead of 2*pi for rad
+            true_euler_deg_valid_unwrapped = ensure_angle_continuity(true_euler_deg_valid, threshold=180)
 
-            estimated_euler_deg = est_euler_deg_valid_unwrapped # Store unwrapped Euler angles
-            true_euler_deg = true_euler_deg_valid_unwrapped     # Store unwrapped true Euler angles
+            estimated_euler_deg = est_euler_deg_valid_unwrapped # Store for results
+            true_euler_deg = true_euler_deg_valid_unwrapped     # Store for results
+            
+            # calculate_angle_rmse function correctly computes differences in degrees
             rmse_euler_deg = calculate_angle_rmse(est_euler_deg_valid_unwrapped, true_euler_deg_valid_unwrapped)
 
 
@@ -1683,21 +1475,21 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             diff_bg = est_bg_valid - true_bg_valid
             rmse_bg = np.sqrt((diff_bg**2).mean(axis=0))
 
-    # Package results into a dictionary
+    # --- Collect Results in a Dictionary ---
     results = {
         "timestamps": timestamps_ns,
         "estimated_quaternions": estimated_quaternions,
-        "estimated_euler_deg": estimated_euler_deg, # Unwrapped Euler angles
-        "estimated_euler_raw": estimated_euler_raw, # Raw (wrapped) Euler angles
+        "estimated_euler_deg": estimated_euler_deg, 
+        "estimated_euler_raw": estimated_euler_raw, 
         "estimated_velocities": estimated_velocities,
         "estimated_positions": estimated_positions,
         "estimated_accel_biases": estimated_accel_biases,
         "estimated_gyro_biases": estimated_gyro_biases,
         "true_quaternions": true_quaternions,
-        "true_euler_deg": true_euler_deg,           # Unwrapped true Euler angles
-        "true_euler_raw": true_euler_raw,           # Raw (wrapped) true Euler angles
-        "rmse_quat_angular_deg": rmse_quat_angular_deg,
-        "rmse_euler_deg": rmse_euler_deg,
+        "true_euler_deg": true_euler_deg,           
+        "true_euler_raw": true_euler_raw,           
+        "rmse_quat_angular_deg": rmse_quat_angular_deg, 
+        "rmse_euler_deg": rmse_euler_deg,               
         "rmse_vel": rmse_vel,
         "rmse_pos": rmse_pos,
         "rmse_ba": rmse_ba,
@@ -1707,13 +1499,9 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     return results
 
 # =========================================================
-# Tek bir sekansı (örn. MH01) işleyen fonksiyon
+# Function to process a single sequence (e.g., MH01)
 # =========================================================
 def run_sequence(seq_name, config, summary_file):
-    """
-    Processes a single VIO dataset sequence (e.g., "MH01").
-    It handles file paths, adaptive covariance computation (if enabled), and result saving.
-    """
     imu_file_path = f"imu_interp_gt/{seq_name}_imu_with_interpolated_groundtruth.csv"
     sequence_number_str = seq_name[2:]  # Örnek: MH01 -> "01"
     # Convert to int to remove leading zero (e.g., "01" -> 1), then format into path
@@ -1726,25 +1514,26 @@ def run_sequence(seq_name, config, summary_file):
         sigma_v_map = {}
         sigma_p_map = {}
 
-    print(f"[{seq_name}] Processing started...")
+    print(f"[{seq_name}] Starting...")
     start_time = time.time()
     results = process_vio_data(imu_file_path, visual_file_path, sigma_v_map, sigma_p_map)
+    # Check if results is None (in case of processing error)
     if results is None:
         print(f"[{seq_name}] Could not be processed due to an error.")
         return 
 
-    print(f"[{seq_name}] === RMSE Sonuçları ===")
-    print("Quaternion Angular RMSE (degrees):", results["rmse_quat_angular_deg"])
-    print("Euler Angle RMSE (degrees):", results["rmse_euler_deg"])
+    print(f"[{seq_name}] === RMSE Results ===")
+    print("Quaternion Angular RMSE (degrees):", results["rmse_quat_angular_deg"]) 
+    print("Euler Angle RMSE (degrees):", results["rmse_euler_deg"]) 
     print("Velocity RMSE (m/s):", results["rmse_vel"])
     if results["rmse_pos"] is not None:
-        print("Position RMSE (m):", results["rmse_pos"])
+        print("Position RMSE (m):************************************************", results["rmse_pos"],"***************")
     if results["rmse_ba"] is not None:
         print("Accel Bias RMSE (m/s^2):", results["rmse_ba"])
     if results["rmse_bg"] is not None:
         print("Gyro Bias RMSE (rad/s):", results["rmse_bg"])
     if "total_static_duration" in results:
-        print(f"Toplam Statik Süre (Gravity Update Aktif): {results['total_static_duration']:.4f} sn")
+        print(f"Total Static Duration (Gravity Update Active): {results['total_static_duration']:.4f} s")
 
 
     detailed_csv = f"outputs/adaptive_{seq_name.lower()}.csv"
@@ -1757,13 +1546,13 @@ def run_sequence(seq_name, config, summary_file):
     print(f"[{seq_name}] Total Execution Time: {end_time - start_time:.4f} s")
 
 # =========================================================
-# ANA PROGRAM: Sekansları paralel çalıştırma
+# MAIN PROGRAM: Run sequences in parallel
 # =========================================================
 if __name__ == "__main__":
     sequences = ["MH01", "MH02", "MH03", "MH04", "MH05"]
-    summary_file = SAVE_RESULTS_CSV_NAME # Centralized summary file for all runs.
+    summary_file = SAVE_RESULTS_CSV_NAME
 
-    # --- Başlangıçta CSV Kontrolü ---
+    # --- Initial CSV Check ---
     results_exist = False
     if os.path.exists(summary_file) and SAVE_RESULTS_CSV:
         try:
@@ -1793,11 +1582,11 @@ if __name__ == "__main__":
                 ]
                 
                 existing_sequences = set(filtered_df["Sequence"].unique())
-                # Check if results for all sequences with the current parameters already exist.
+                # Check if all sequences exist for this parameter set
                 if set(sequences).issubset(existing_sequences):
                     results_exist = True
             else:
-                 print(f"Warning: Expected columns for parameter matching are missing in {summary_file}. Skipping pre-run check.")
+                 print(f"Warning: {summary_file} is missing expected columns (check normalization parameters?). Skipping check.")
 
         except pd.errors.EmptyDataError:
             print(f"Warning: {summary_file} is empty. Skipping check.")
@@ -1805,9 +1594,10 @@ if __name__ == "__main__":
             print(f"Warning: Error reading {summary_file}: {e}. Skipping check.")
 
     if results_exist:
-        print(f"Results for the current parameter combination already exist in '{summary_file}'. Skipping execution.")
-        sys.exit(0) # Programdan çık
-    # --- CSV Kontrolü Sonu ---
+        print(f"Results for this parameter combination (alpha_v={args.alpha_v}, epsilon_v={args.epsilon_v}, zeta_H={args.zeta_H}, zeta_L={args.zeta_L}, beta_p={args.beta_p}, epsilon_p={args.epsilon_p}, zeta_p={args.zeta_p}, entropy_norm_min={args.entropy_norm_min}, pose_chi2_norm_min={args.pose_chi2_norm_min}, culled_norm_min={args.culled_norm_min}, w_thr={args.w_thr}, d_thr={args.d_thr}, activation=casef (s={args.s}), adaptive={args.adaptive}) already exist in '{summary_file}'.")
+        print("The software will not be run.")
+        sys.exit(0) # Exit program
+    # --- End of CSV Check ---
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=5) as executor:
         futures = []
