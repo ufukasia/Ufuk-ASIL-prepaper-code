@@ -40,7 +40,7 @@ parser.add_argument("--zeta_L", type=float, default=0, help="Weight for decreasi
 parser.add_argument("--w_thr", type=float, default=0.25, help="w_thr parameter for image confidence")
 parser.add_argument("--d_thr", type=float, default=0.99, help="d_thr parameter for image confidence")
 parser.add_argument("--s", type=float, default=3.0, help="s parameter for CASEF activation function")
-parser.add_argument("--adaptive", action="store_true", default=True, help="Whether to use adaptive covariance")
+parser.add_argument("--adaptive", action="store_true", default=False, help="Whether to use adaptive covariance")
 
 
 parser.add_argument("--zupt_acc_thr", type=float, default=0.1, help="Accelerometer std threshold for ZUPT [m/s^2]")
