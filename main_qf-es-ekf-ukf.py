@@ -27,19 +27,19 @@ parser.add_argument("--epsilon_p", type=float, default=1, help="Weight for pose_
 parser.add_argument("--zeta_p", type=float, default=1, help="Weight for culled_keyframes (for sigma_p)")
 
 # Sigma_p Normalization Minimum Values.
-parser.add_argument("--entropy_norm_min", type=float, default=0, help="Minimum value for Entropy normalization (for sigma_p)")
-parser.add_argument("--pose_chi2_norm_min", type=float, default=1, help="Minimum value for Pose Chi2 normalization (for sigma_p)")
+parser.add_argument("--entropy_norm_min", type=float, default=0.5, help="Minimum value for Entropy normalization (for sigma_p)")
+parser.add_argument("--pose_chi2_norm_min", type=float, default=0.6, help="Minimum value for Pose Chi2 normalization (for sigma_p)")
 parser.add_argument("--culled_norm_min", type=float, default=0, help="Minimum value for Culled Keyframes normalization (for sigma_p)")
 
 # Sigma_v weights "_H represent just Rising, _L represent just Falling" for experiment, You can do same for _H and _L
-parser.add_argument("--alpha_v", type=float, default=5, help="Weight for Intensity difference (for sigma_v)")
-parser.add_argument("--epsilon_v", type=float, default=2, help="Weight for Pose_chi2 difference (for sigma_v)")
+parser.add_argument("--alpha_v", type=float, default=18, help="Weight for Intensity difference (for sigma_v)")
+parser.add_argument("--epsilon_v", type=float, default=3.3, help="Weight for Pose_chi2 difference (for sigma_v)")
 parser.add_argument("--zeta_H", type=float, default=1, help="Weight for increasing culled_keyframes (for sigma_v)")
 parser.add_argument("--zeta_L", type=float, default=0, help="Weight for decreasing culled_keyframes (for sigma_v)")
 
-parser.add_argument("--w_thr", type=float, default=0.25, help="w_thr parameter for image confidence")
-parser.add_argument("--d_thr", type=float, default=0.99, help="d_thr parameter for image confidence")
-parser.add_argument("--s", type=float, default=3.0, help="s parameter for CASEF activation function")
+parser.add_argument("--w_thr", type=float, default=0.20, help="w_thr parameter for image confidence")
+parser.add_argument("--d_thr", type=float, default=1, help="d_thr parameter for image confidence")
+parser.add_argument("--s", type=float, default=1, help="s parameter for CASEF activation function")
 parser.add_argument("--adaptive", action="store_true", default=True, help="Enable adaptive covariance")
 
 
