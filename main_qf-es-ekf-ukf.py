@@ -1,4 +1,4 @@
-SAVE_RESULTS_CSV = True
+SAVE_RESULTS_CSV = False
 SAVE_RESULTS_CSV_NAME = "results.csv"
 
 import numpy as np
@@ -16,7 +16,7 @@ from collections import deque
 
 from cov_sigma_v import compute_adaptive_sigma_v  
 from cov_sigma_p import compute_adaptive_sigma_p  
-
+import pygad
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -28,18 +28,18 @@ parser.add_argument("--zeta_p", type=float, default=1, help="Weight for culled_k
 
 # Sigma_p Normalization Minimum Values.
 parser.add_argument("--entropy_norm_min", type=float, default=0, help="Minimum value for Entropy normalization (for sigma_p)")
-parser.add_argument("--pose_chi2_norm_min", type=float, default=1, help="Minimum value for Pose Chi2 normalization (for sigma_p)")
-parser.add_argument("--culled_norm_min", type=float, default=0, help="Minimum value for Culled Keyframes normalization (for sigma_p)")
+parser.add_argument("--pose_chi2_norm_min", type=float, default=0.0135, help="Minimum value for Pose Chi2 normalization (for sigma_p)")
+parser.add_argument("--culled_norm_min", type=float, default=0.3892, help="Minimum value for Culled Keyframes normalization (for sigma_p)")
 
 # Sigma_v weights "_H represent just Rising, _L represent just Falling" for experiment, You can do same for _H and _L
-parser.add_argument("--alpha_v", type=float, default=5, help="Weight for Intensity difference (for sigma_v)")
-parser.add_argument("--epsilon_v", type=float, default=2, help="Weight for Pose_chi2 difference (for sigma_v)")
-parser.add_argument("--zeta_H", type=float, default=1, help="Weight for increasing culled_keyframes (for sigma_v)")
+parser.add_argument("--alpha_v", type=float, default=2.5379, help="Weight for Intensity difference (for sigma_v)")
+parser.add_argument("--epsilon_v", type=float, default=2.9190, help="Weight for Pose_chi2 difference (for sigma_v)")
+parser.add_argument("--zeta_H", type=float, default=2.9190, help="Weight for increasing culled_keyframes (for sigma_v)")
 parser.add_argument("--zeta_L", type=float, default=0, help="Weight for decreasing culled_keyframes (for sigma_v)")
 
-parser.add_argument("--w_thr", type=float, default=0.25, help="w_thr parameter for image confidence")
-parser.add_argument("--d_thr", type=float, default=0.99, help="d_thr parameter for image confidence")
-parser.add_argument("--s", type=float, default=3.0, help="s parameter for CASEF activation function")
+parser.add_argument("--w_thr", type=float, default=0.15, help="w_thr parameter for image confidence")
+parser.add_argument("--d_thr", type=float, default=1, help="d_thr parameter for image confidence")
+parser.add_argument("--s", type=float, default=1, help="s parameter for CASEF activation function")
 parser.add_argument("--adaptive", action="store_true", default=True, help="Enable adaptive covariance")
 
 
@@ -47,7 +47,14 @@ parser.add_argument("--zupt_acc_thr", type=float, default=0.1, help="Acceleratio
 parser.add_argument("--zupt_gyro_thr", type=float, default=0.1, help="Gyroscope std threshold for ZUPT [rad/s]")
 parser.add_argument("--zupt_win", type=int, default=60, help="Window size for ZUPT (number of samples)")
 
+parser.add_argument("--optimize_ga", action="store_true", default=False, help="Enable Genetic Algorithm optimization for parameters")
+parser.add_argument("--ga_outer_workers", type=int, default=0, help="Number of outer parallel workers for GA (0 to auto-calculate based on CPU cores / 5, 1 for serial GA evaluations).")
+
 args = parser.parse_args()
+# Store the original args when the script starts, at module level.
+# This ensures it's available to worker processes when they import the module.
+original_args_for_ga = copy.deepcopy(args)
+
 
 # =========================================================
 # Activation Functions
@@ -1367,7 +1374,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
 def run_sequence(seq_name, config, summary_file):
     imu_file_path = f"imu_interp_gt/{seq_name}_imu_with_interpolated_groundtruth.csv"
     sequence_number_str = seq_name[2:]  # Example: MH01 -> "01"    
-    visual_file_path = f"VO/vo_pred_super_best/mh{int(sequence_number_str)}_ns.csv"    
+    visual_file_path = f"VO/mh{int(sequence_number_str)}_ns.csv"    
 
     if args.adaptive:
         sigma_v_map = compute_adaptive_sigma_v(config, visual_file_path, seq_name)
@@ -1407,65 +1414,289 @@ def run_sequence(seq_name, config, summary_file):
     print(f"[{seq_name}] Total Execution Time: {end_time - start_time:.4f} s")
 
 # =========================================================
+# GENETIC ALGORITHM OPTIMIZATION FUNCTIONS
+# =========================================================
+ga_total_start_time = 0
+generation_start_time = 0
+
+# Store the original args when the script starts
+# Helper function for GA fitness evaluation (to be run in parallel for each sequence)
+def evaluate_single_sequence_for_ga(seq_name_ga, current_solution_config, current_args_for_process):
+    """
+    Evaluates a single sequence with a given configuration for GA fitness.
+    This function is designed to be called by ProcessPoolExecutor.
+    """
+    imu_file_path_ga = f"imu_interp_gt/{seq_name_ga}_imu_with_interpolated_groundtruth.csv"
+    sequence_number_str_ga = seq_name_ga[2:]
+    # Ensure this path matches the one in run_sequence
+    visual_file_path_ga = f"VO/vo_pred_super_best/mh{int(sequence_number_str_ga)}_ns.csv" 
+
+    sigma_v_map_ga_seq = compute_adaptive_sigma_v(current_solution_config, visual_file_path_ga, seq_name_ga)
+    sigma_p_map_ga_seq = compute_adaptive_sigma_p(current_solution_config, visual_file_path_ga, seq_name_ga)
+
+   # Create a temporary args object for this specific evaluation
+    temp_args_for_process = copy.deepcopy(current_args_for_process) # Already a deepcopy
+
+
+    results_seq = process_vio_data(imu_file_path_ga, visual_file_path_ga, sigma_v_map_ga_seq, sigma_p_map_ga_seq)
+
+    if results_seq is None or results_seq["rmse_pos"] is None:
+        return float('inf') # Return a high RMSE for failed runs
+
+    mean_rmse_pos_seq = np.mean(results_seq["rmse_pos"]) if isinstance(results_seq["rmse_pos"], np.ndarray) else float('inf')
+    return mean_rmse_pos_seq
+
+def fitness_func_pygad(ga_instance, solution, solution_idx):
+    global config, args # Allow modification of global config/args for this call
+    
+
+    temp_config = {
+        'alpha_v': solution[3], 'beta_p': original_args_for_ga.beta_p,
+        'epsilon_v': solution[4], 'epsilon_p': original_args_for_ga.epsilon_p,
+        'zeta_H': solution[5], 'zeta_L': original_args_for_ga.zeta_L, # Use original zeta_L
+        'zeta_p': original_args_for_ga.zeta_p, 'w_thr': solution[6],
+        'd_thr': original_args_for_ga.d_thr, 's': original_args_for_ga.s, # Use original s and d_thr
+        'entropy_norm_min': solution[0], 'pose_chi2_norm_min': solution[1],
+        'culled_norm_min': solution[2],
+    }
+
+    backup_args_values = {
+        'entropy_norm_min': args.entropy_norm_min, 'pose_chi2_norm_min': args.pose_chi2_norm_min,
+        'culled_norm_min': args.culled_norm_min, 'alpha_v': args.alpha_v,
+        'epsilon_v': args.epsilon_v, 'zeta_H': args.zeta_H, 'w_thr': args.w_thr,
+        'adaptive': args.adaptive
+    }
+
+    args.entropy_norm_min = solution[0]
+    args.pose_chi2_norm_min = solution[1]
+    args.culled_norm_min = solution[2]
+    args.alpha_v = solution[3]
+    args.epsilon_v = solution[4]
+    args.zeta_H = solution[5]
+    args.w_thr = solution[6]
+    args.adaptive = True # GA optimization assumes adaptive mode
+
+    original_save_main_csv_flag = globals().get('SAVE_RESULTS_CSV', False)
+    globals()['SAVE_RESULTS_CSV'] = True
+
+    sequences_for_ga = ["MH04", "MH05"]
+    all_rmses_pos = []
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=len(sequences_for_ga)) as executor:
+        future_to_seq = {
+            executor.submit(evaluate_single_sequence_for_ga, seq_name, temp_config, copy.deepcopy(args)): seq_name
+            for seq_name in sequences_for_ga
+        }
+        for future in concurrent.futures.as_completed(future_to_seq):
+            seq_name = future_to_seq[future]
+            try:
+                rmse_pos_seq = future.result()
+                if not (np.isnan(rmse_pos_seq) or np.isinf(rmse_pos_seq)):
+                    all_rmses_pos.append(rmse_pos_seq)
+                else:
+                    all_rmses_pos.append(float('inf')) 
+            except Exception as exc:
+                all_rmses_pos.append(float('inf')) 
+
+    for key, value in backup_args_values.items():
+        setattr(args, key, value)
+    globals()['SAVE_RESULTS_CSV'] = original_save_main_csv_flag
+
+    if not all_rmses_pos or all(np.isinf(r) or np.isnan(r) for r in all_rmses_pos):
+        return 0.0
+    
+    valid_rmses = [r for r in all_rmses_pos if not (np.isinf(r) or np.isnan(r))]
+    average_rmse_pos = np.mean(valid_rmses) if valid_rmses else float('inf')
+
+    fitness = 1.0 / average_rmse_pos if average_rmse_pos > 1e-6 and not np.isinf(average_rmse_pos) else 0.0
+    return fitness
+
+def on_generation_callback(ga_instance):
+    global generation_start_time, ga_total_start_time
+    current_gen_time = time.time() - generation_start_time
+    total_elapsed_time = time.time() - ga_total_start_time
+    avg_time_per_gen = total_elapsed_time / ga_instance.generations_completed if ga_instance.generations_completed > 0 else current_gen_time
+    remaining_gens = ga_instance.num_generations - ga_instance.generations_completed
+    estimated_remaining_time = avg_time_per_gen * remaining_gens
+    print(f"Gen {ga_instance.generations_completed} | Best Fitness: {ga_instance.best_solution()[1]:.4f} | Gen Time: {current_gen_time:.2f}s | Est. Rem: {time.strftime('%H:%M:%S', time.gmtime(estimated_remaining_time))}")
+    generation_start_time = time.time()
+
+# =========================================================
 # MAIN PROGRAM: Run sequences in parallel
 # =========================================================
 if __name__ == "__main__":
-    sequences = ["MH01", "MH02", "MH03", "MH04", "MH05"]
+    # Define the list of sequences to process for normal runs.
+    # You can modify this list to select specific sequences.
+    # For example: sequences = ["MH01", "MH03"]
+    sequences = ["MH04", "MH05"] 
     summary_file = SAVE_RESULTS_CSV_NAME
 
     # --- Initial CSV Check ---
-    results_exist = False
-    if os.path.exists(summary_file) and SAVE_RESULTS_CSV:
-        try:
-            df_results = pd.read_csv(summary_file)
-            required_cols_check = [
-                "Sequence", "Alpha_v", "Epsilon_v", "Zeta_H", "Zeta_L",
-                "Beta_p", "Epsilon_p", "Zeta_p", 
-                "Entropy_Norm_Min", "Pose_Chi2_Norm_Min", "Culled_Norm_Min",
-                "W_THR", "D_THR", "Activation_Function", "Adaptive"
-            ]
-            if all(col in df_results.columns for col in required_cols_check):
-                filtered_df = df_results[
-                    (df_results["Alpha_v"] == args.alpha_v) &                    
-                    (df_results["Epsilon_v"] == args.epsilon_v) &
-                    (df_results["Zeta_H"] == args.zeta_H) &
-                    (df_results["Zeta_L"] == args.zeta_L) &
-                    (df_results["Beta_p"] == args.beta_p) &
-                    (df_results["Epsilon_p"] == args.epsilon_p) &
-                    (df_results["Zeta_p"] == args.zeta_p) &
-                    (df_results["Entropy_Norm_Min"] == args.entropy_norm_min) & 
-                    (df_results["Pose_Chi2_Norm_Min"] == args.pose_chi2_norm_min) & 
-                    (df_results["Culled_Norm_Min"] == args.culled_norm_min) & 
-                    (df_results["W_THR"] == args.w_thr) &
-                    (df_results["D_THR"] == args.d_thr) &
-                    (df_results["Activation_Function"] == f"casef (s={args.s})") &
-                    (df_results["Adaptive"] == args.adaptive)
+    # (This check is for manual runs, GA runs will bypass or handle results differently)
+    if not args.optimize_ga: # Perform CSV check only if not in GA mode
+        results_exist = False
+        # Note: SAVE_RESULTS_CSV is False by default in this script.
+        # If you want this check to run, ensure SAVE_RESULTS_CSV is True for normal runs.
+        if os.path.exists(summary_file) and globals().get('SAVE_RESULTS_CSV', False):
+            try:
+                df_results = pd.read_csv(summary_file)
+                required_cols_check = [ 
+                    "Sequence", "Alpha_v", "Epsilon_v", "Zeta_H", "Zeta_L",
+                    "Beta_p", "Epsilon_p", "Zeta_p", 
+                    "Entropy_Norm_Min", "Pose_Chi2_Norm_Min", "Culled_Norm_Min",
+                    "W_THR", "D_THR", "Activation_Function", "Adaptive"
                 ]
-                
-                existing_sequences = set(filtered_df["Sequence"].unique())
-                # Check if all sequences exist
-                if set(sequences).issubset(existing_sequences):
-                    results_exist = True
-            else:
-                 print(f"Warning: Expected columns are missing in {summary_file} (Were normalization parameters checked?). Skipping check.")
+                if all(col in df_results.columns for col in required_cols_check):
+                    # Create filter based on all args
+                    filtered_df = df_results[
+                        (df_results["Alpha_v"] == args.alpha_v) &
+                        (df_results["Epsilon_v"] == args.epsilon_v) &
+                        (df_results["Zeta_H"] == args.zeta_H) &
+                        (df_results["Zeta_L"] == args.zeta_L) &
+                        (df_results["Beta_p"] == args.beta_p) &
+                        (df_results["Epsilon_p"] == args.epsilon_p) &
+                        (df_results["Zeta_p"] == args.zeta_p) &
+                        (df_results["Entropy_Norm_Min"] == args.entropy_norm_min) &
+                        (df_results["Pose_Chi2_Norm_Min"] == args.pose_chi2_norm_min) &
+                        (df_results["Culled_Norm_Min"] == args.culled_norm_min) &
+                        (df_results["W_THR"] == args.w_thr) &
+                        (df_results["D_THR"] == args.d_thr) &
+                        (df_results["Activation_Function"] == f"casef (s={args.s})") &
+                        (df_results["Adaptive"] == args.adaptive)
+                    ]
+                    existing_sequences = set(filtered_df["Sequence"].unique())
+                    if set(sequences).issubset(existing_sequences):
+                        results_exist = True
+                else:
+                    print(f"Warning: Expected columns are missing in {summary_file}. Skipping check.")
+            except pd.errors.EmptyDataError:
+                print(f"Warning: {summary_file} is empty. Skipping check.")
+            except Exception as e:
+                print(f"Warning: Error reading {summary_file}: {e}. Skipping check.")
 
-        except pd.errors.EmptyDataError:
-            print(f"Warning: {summary_file} is empty. Skipping check.")
+        if results_exist:
+            print(f"Results for this parameter combination already exist in '{summary_file}'.")
+            param_summary_for_msg = (
+                f"alpha_v={args.alpha_v}, epsilon_v={args.epsilon_v}, zeta_H={args.zeta_H}, zeta_L={args.zeta_L}, "
+                f"beta_p={args.beta_p}, epsilon_p={args.epsilon_p}, zeta_p={args.zeta_p}, "
+                f"entropy_norm_min={args.entropy_norm_min}, pose_chi2_norm_min={args.pose_chi2_norm_min}, culled_norm_min={args.culled_norm_min}, "
+                f"w_thr={args.w_thr}, d_thr={args.d_thr}, s={args.s}, adaptive={args.adaptive}"
+            )
+            print(f"Parameters: {param_summary_for_msg}")
+            print("The software will not be run for these parameters.")
+            sys.exit(0)
+
+    if args.optimize_ga:
+        print("Starting Genetic Algorithm Optimization...")
+        # original_args_for_ga is now defined at module level and already copied.
+
+        # Parameters to optimize: [entropy_norm_min, pose_chi2_norm_min, culled_norm_min, alpha_v, epsilon_v, zeta_H, w_thr]
+        initial_solution = [
+            args.entropy_norm_min, args.pose_chi2_norm_min, args.culled_norm_min,
+            args.alpha_v, args.epsilon_v, args.zeta_H, args.w_thr
+        ]
+
+        gene_space = [
+            {'low': 0, 'high': 1.0},    # entropy_norm_min
+            {'low': 0, 'high': 2.5},    # pose_chi2_norm_min
+            {'low': -0.5, 'high': 1.0},    # culled_norm_min
+            {'low': 2, 'high': 20.0},   # alpha_v
+            {'low': 2, 'high': 10.0},   # epsilon_v
+            {'low': 0.1, 'high': 2.0},    # zeta_H
+            {'low': 0.15, 'high': 0.30}    # w_thr (ensure w_thr < d_thr, d_thr is default 1.0)
+        ]
+
+        num_genes = len(initial_solution)
+        sol_per_pop = 30 
+        num_parents_mating = 10
+        num_generations = 50 
+        keep_parents = 10 
+
+        # Determine the number of parallel GA evaluations
+        num_sequences_per_ga_eval = len(sequences) # Typically 5, use the globally defined 'sequences'
+        if args.ga_outer_workers == 0:
+            num_ga_parallel_evals = max(1, os.cpu_count() // num_sequences_per_ga_eval)
+        else:
+            num_ga_parallel_evals = args.ga_outer_workers
+
+        initial_population = [initial_solution.copy() for _ in range(sol_per_pop)]
+
+        ga_instance = pygad.GA(num_generations=num_generations,
+                               num_parents_mating=num_parents_mating,
+                               fitness_func=fitness_func_pygad,
+                               sol_per_pop=sol_per_pop,
+                               num_genes=num_genes,
+                               gene_space=gene_space,
+                               initial_population=initial_population,
+                               parent_selection_type="sss", 
+                               keep_parents=keep_parents,
+                               crossover_type="single_point",
+                               mutation_type="random",
+                               mutation_percent_genes=30, 
+                               on_generation=on_generation_callback,
+                               parallel_processing=['process', num_ga_parallel_evals] if num_ga_parallel_evals > 1 else None
+                               )
+        
+        print(f"Estimating time for one fitness evaluation (running for {len(sequences)} sequences in parallel)...")
+        eval_start_time = time.time()
+        try:
+            fitness_func_pygad(ga_instance, initial_solution, 0)
         except Exception as e:
-            print(f"Warning: Error reading {summary_file}: {e}. Skipping check.")
+            print(f"Error during estimation call: {e}. This might be due to initial setup or file paths.")
+        one_eval_time = time.time() - eval_start_time
+        print(f"Approx. time for one fitness evaluation: {one_eval_time:.2f} seconds.")
+        
+        approx_total_evals = sol_per_pop + (num_generations * (sol_per_pop - (keep_parents if keep_parents > 0 else 0) ))
+        estimated_total_cpu_time = one_eval_time * approx_total_evals
+        
+        if num_ga_parallel_evals > 1:
+            estimated_wall_clock_time = estimated_total_cpu_time / num_ga_parallel_evals
+            print(f"Estimated total GA wall-clock duration for {num_generations} generations with {num_ga_parallel_evals} parallel GA workers: {time.strftime('%H:%M:%S', time.gmtime(estimated_wall_clock_time))}")
+        print(f"Estimated total GA CPU time for {num_generations} generations: {time.strftime('%H:%M:%S', time.gmtime(estimated_total_cpu_time))}")
 
-    if results_exist:
-        print(f"Results for this parameter combination (alpha_v={args.alpha_v}, epsilon_v={args.epsilon_v}, zeta_H={args.zeta_H}, zeta_L={args.zeta_L}, beta_p={args.beta_p}, epsilon_p={args.epsilon_p}, zeta_p={args.zeta_p}, entropy_norm_min={args.entropy_norm_min}, pose_chi2_norm_min={args.pose_chi2_norm_min}, culled_norm_min={args.culled_norm_min}, w_thr={args.w_thr}, d_thr={args.d_thr}, activation=casef (s={args.s}), adaptive={args.adaptive}) already exist in '{summary_file}'.")
-        print("The software will not run.")
-        sys.exit(0) # Exit program
-    # --- End of CSV Check ---
+        ga_total_start_time = time.time()
+        generation_start_time = time.time()
+        ga_instance.run()
+        ga_total_duration = time.time() - ga_total_start_time
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=5) as executor:
-        futures = []
-        for seq in sequences:
-            fut = executor.submit(run_sequence, seq, config, summary_file)
-            futures.append(fut)
+        solution, solution_fitness, solution_idx = ga_instance.best_solution()
+        print(f"Finished GA Optimization in {ga_total_duration:.2f} seconds.")
+        print(f"Best solution found: {solution}")
+        print(f"Best fitness value: {solution_fitness:.4f}")
+        if solution_fitness > 1e-9: # Check if fitness is reasonably high
+            best_rmse_pos = 1.0 / solution_fitness
+            print(f"Best Average RMSE (Position) over MH01-MH05: {best_rmse_pos:.4f} m")
+        else:
+            print("Best Average RMSE (Position) over MH01-MH05: Could not be determined (fitness is too low).")
+        
+        param_names = ["entropy_norm_min", "pose_chi2_norm_min", "culled_norm_min", "alpha_v", "epsilon_v", "zeta_H", "w_thr"]
+        print("Best parameters:")
+        for name, val in zip(param_names, solution):
+            print(f"  --{name} {val:.4f}")
+        
+        print("\nTo run with these optimal parameters (and other defaults):")
+        cmd_parts = [f'python "{os.path.basename(__file__)}"']
+        for name, val in zip(param_names, solution):
+            cmd_parts.append(f"--{name} {val:.4f}")
+        
+        cmd_parts.append(f"--beta_p {original_args_for_ga.beta_p}")
+        cmd_parts.append(f"--epsilon_p {original_args_for_ga.epsilon_p}")
+        cmd_parts.append(f"--zeta_p {original_args_for_ga.zeta_p}")
+        cmd_parts.append(f"--zeta_L {original_args_for_ga.zeta_L}") # Use original zeta_L
+        cmd_parts.append(f"--d_thr {original_args_for_ga.d_thr}")   # Use original d_thr
+        cmd_parts.append(f"--s {original_args_for_ga.s}")           # Use original s
+        cmd_parts.append(f"--zupt_acc_thr {original_args_for_ga.zupt_acc_thr}")
+        cmd_parts.append(f"--zupt_gyro_thr {original_args_for_ga.zupt_gyro_thr}")
+        cmd_parts.append(f"--zupt_win {original_args_for_ga.zupt_win}")
+        if original_args_for_ga.adaptive: # Should be true for GA
+             cmd_parts.append(f"--adaptive")
+        print(" ".join(cmd_parts))
 
-        concurrent.futures.wait(futures)
-
-    print("=== Processing of all sequences finished. ===")
+    else: # Normal run (not GA optimization)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=5) as executor:
+            futures = []
+            for seq in sequences:
+                fut = executor.submit(run_sequence, seq, config, summary_file)
+                futures.append(fut)
+            concurrent.futures.wait(futures)
+        print("=== Processing of all sequences finished. ===")

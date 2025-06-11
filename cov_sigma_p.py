@@ -22,8 +22,8 @@ CULLED_DIFF = 3.0 # This typically represents the positive range of culled keyfr
 def casef(x, s):
     """
     Clipped Adaptive Saturation Exponential Function (CASEF)
-    Negatif girdilerde 0, 0–1 aralığında üssel olarak ölçeklenir,
-    1 üzerindeki girdilerde doygunluk (saturasyon) ile 1 değerini alır.
+    Returns 0 for negative inputs, scales exponentially in the 0–1 range,
+    and saturates to 1 for inputs above 1.
     """
     x_clip = np.clip(x, 0.0, 1.0)
 
@@ -126,7 +126,7 @@ def compute_adaptive_sigma_p(config, csv_file, sequence):
         pose_norm        = min_max_normalize(pose_val, pose_chi2_min, pose_chi2_max)
         culled_norm      = min_max_normalize(culled_val, culled_min, culled_max)
 
-        # Ölçeklendirme (config'den gelen yeni parametrelerle)
+        # Scaling (with new parameters from config)
         scaled_inv_entropy = config['beta_p'] * inv_entropy_norm
         scaled_pose        = config['epsilon_p'] * pose_norm
         scaled_culled      = config['zeta_p'] * culled_norm
@@ -174,7 +174,7 @@ def compute_adaptive_sigma_p(config, csv_file, sequence):
     with open(out_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "Satir_No",
+            "Row_No",
             "Timestamp [ns]",
             "static_inv_entropy",
             "static_pose_chi2_error",

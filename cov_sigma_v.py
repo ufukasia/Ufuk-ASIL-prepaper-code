@@ -77,7 +77,7 @@ def compute_adaptive_sigma_v(config, visual_file, sequence):
         print(f"Error reading visual data CSV: {e}")
         return {}
 
-    # Beklenen sütunlar kontrolü
+    # Check for expected columns
     required_cols = ["static_intensity", "pose_opt_chi2_error", "last_num_culled_keyframes"]
     missing_cols = [col for col in required_cols if col not in df.columns]
     if missing_cols:
@@ -104,10 +104,10 @@ def compute_adaptive_sigma_v(config, visual_file, sequence):
 
     # Calculate weighted absolute difference in pose optimization chi-squared error
     diff_pose_chi2 = df['pose_opt_chi2_error'].diff().fillna(0)
-    epsilon_v = config.get('epsilon_v', 1.0) # epsilon_L/H yerine epsilon_v kullan
-    df['weighted_delta_pose_chi2'] = epsilon_v * np.abs(diff_pose_chi2) # Yöne bakılmaksızın mutlak farkı ağırlıklandır
+    epsilon_v = config.get('epsilon_v', 1.0) # Use epsilon_v instead of epsilon_L/H
+    df['weighted_delta_pose_chi2'] = epsilon_v * np.abs(diff_pose_chi2) # Weight the absolute difference regardless of direction
 
-    # Culled keyframes (Zeta H/L ayrı kalıyor)
+    # Culled keyframes (Zeta_H and Zeta_L are handled separately)
     diff_culled_kf = df['last_num_culled_keyframes'].diff().fillna(0)
     zeta_L = config.get('zeta_L', 1.0)
     zeta_H = config.get('zeta_H', 1.0)
@@ -174,7 +174,7 @@ def compute_adaptive_sigma_v(config, visual_file, sequence):
     with open(out_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "Satir_No",
+            "Row_No",
             "Timestamp [ns]",
             "weighted_delta_intensity",
             "weighted_delta_pose_chi2",
