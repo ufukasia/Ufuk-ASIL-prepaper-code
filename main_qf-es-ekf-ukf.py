@@ -1,4 +1,4 @@
-SAVE_RESULTS_CSV = False
+SAVE_RESULTS_CSV = True
 SAVE_RESULTS_CSV_NAME = "results.csv"
 
 import numpy as np
@@ -16,7 +16,7 @@ from collections import deque
 
 from cov_sigma_v import compute_adaptive_sigma_v  
 from cov_sigma_p import compute_adaptive_sigma_p  
-
+import pygad
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -28,16 +28,16 @@ parser.add_argument("--zeta_p", type=float, default=1, help="Weight for culled_k
 
 # Sigma_p Normalization Minimum Values.
 parser.add_argument("--entropy_norm_min", type=float, default=0.5, help="Minimum value for Entropy normalization (for sigma_p)")
-parser.add_argument("--pose_chi2_norm_min", type=float, default=0.6, help="Minimum value for Pose Chi2 normalization (for sigma_p)")
+parser.add_argument("--pose_chi2_norm_min", type=float, default=0.0267, help="Minimum value for Pose Chi2 normalization (for sigma_p)")
 parser.add_argument("--culled_norm_min", type=float, default=0, help="Minimum value for Culled Keyframes normalization (for sigma_p)")
 
 # Sigma_v weights "_H represent just Rising, _L represent just Falling" for experiment, You can do same for _H and _L
-parser.add_argument("--alpha_v", type=float, default=18, help="Weight for Intensity difference (for sigma_v)")
-parser.add_argument("--epsilon_v", type=float, default=3.3, help="Weight for Pose_chi2 difference (for sigma_v)")
-parser.add_argument("--zeta_H", type=float, default=1, help="Weight for increasing culled_keyframes (for sigma_v)")
+parser.add_argument("--alpha_v", type=float, default=2.9, help="Weight for Intensity difference (for sigma_v)")
+parser.add_argument("--epsilon_v", type=float, default=4.9155, help="Weight for Pose_chi2 difference (for sigma_v)")
+parser.add_argument("--zeta_H", type=float, default=0.2838, help="Weight for increasing culled_keyframes (for sigma_v)")
 parser.add_argument("--zeta_L", type=float, default=0, help="Weight for decreasing culled_keyframes (for sigma_v)")
 
-parser.add_argument("--w_thr", type=float, default=0.20, help="w_thr parameter for image confidence")
+parser.add_argument("--w_thr", type=float, default=0.25, help="w_thr parameter for image confidence")
 parser.add_argument("--d_thr", type=float, default=1, help="d_thr parameter for image confidence")
 parser.add_argument("--s", type=float, default=1, help="s parameter for CASEF activation function")
 parser.add_argument("--adaptive", action="store_true", default=True, help="Enable adaptive covariance")
@@ -47,7 +47,14 @@ parser.add_argument("--zupt_acc_thr", type=float, default=0.1, help="Acceleratio
 parser.add_argument("--zupt_gyro_thr", type=float, default=0.1, help="Gyroscope std threshold for ZUPT [rad/s]")
 parser.add_argument("--zupt_win", type=int, default=60, help="Window size for ZUPT (number of samples)")
 
+parser.add_argument("--optimize_ga", action="store_true", default=True, help="Enable Genetic Algorithm optimization for parameters")
+parser.add_argument("--ga_outer_workers", type=int, default=0, help="Number of outer parallel workers for GA (0 to auto-calculate based on CPU cores / 5, 1 for serial GA evaluations).")
+
 args = parser.parse_args()
+# Store the original args when the script starts, at module level.
+# This ensures it's available to worker processes when they import the module.
+original_args_for_ga = copy.deepcopy(args)
+
 
 # =========================================================
 # Activation Functions
@@ -155,32 +162,14 @@ def angle_difference(angle1, angle2):
     diff = angle1 - angle2
     return (diff + 180) % 360 - 180
 
-def R_to_quat_wxyz(rotation_matrix):
-    # SciPy as_quat() returns [x, y, z, w]
-    q_xyzw = R.from_matrix(rotation_matrix).as_quat()
-    return np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
-
-def quat_wxyz_to_R(q_wxyz):
-    # SciPy from_quat() expects [x, y, z, w]
-    q_xyzw = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]])
-    return R.from_quat(q_xyzw).as_matrix()
-
-so3_exp = lambda phi: R.from_rotvec(phi).as_matrix()
-so3_log = lambda rotation_matrix: R.from_matrix(rotation_matrix).as_rotvec()
-
-
 def calculate_angle_rmse(predictions, targets):
     diff = np.array([angle_difference(p, t) for p, t in zip(predictions, targets)])
     return np.sqrt((diff ** 2).mean(axis=0))
 
 # =========================================================
-# Invariant EKF (IEKF) Class for VIO
+# ESKF Class (with Bias Estimation) - Original Base Class
 # =========================================================
-class InvariantEKF_VIO:
-    """
-    Base Invariant Extended Kalman Filter (IEKF) for Visual-Inertial Odometry.
-    Handles nominal state propagation on the SE(3) manifold and error state propagation.
-    """
+class ErrorStateKalmanFilterVIO:
     def __init__(self, initial_quaternion, initial_velocity, initial_position,
                  initial_accel_bias=np.zeros(3), initial_gyro_bias=np.zeros(3),
                  gravity_vector=np.array([0, 0, -9.81]),
@@ -190,7 +179,7 @@ class InvariantEKF_VIO:
                  sigma_g=2e-4, sigma_a=2e-1):
 
         # Nominal State
-        self.R = quat_wxyz_to_R(initial_quaternion / np.linalg.norm(initial_quaternion))
+        self.q = initial_quaternion / np.linalg.norm(initial_quaternion) # Ensure initial norm
         self.v = initial_velocity
         self.p = initial_position
         self.b_a = initial_accel_bias
@@ -239,7 +228,7 @@ class InvariantEKF_VIO:
                                  fixed_sigma_v**2, fixed_sigma_v**2, fixed_sigma_v**2]) 
 
     def _compute_van_loan_matrices(self, R_nav_from_body, accel_corrected, gyro_corrected, dt):
-        """ Computes discrete-time state transition matrix (Phi) and process noise covariance (Qd) using Van Loan's method. """
+        """ Computes discrete Phi and Qd matrices using the Van Loan method. """
         I3 = np.eye(3)
         Z3 = np.zeros((3, 3))
 
@@ -273,53 +262,67 @@ class InvariantEKF_VIO:
     def predict(self, gyro_raw, accel_raw, dt):
         if dt <= 0:
             return
-        
-        # Store old state for p,v propagation
-        v_old = self.v.copy()
-        p_old = self.p.copy()
-        R_old = self.R.copy() # Not strictly needed for this formulation if self.R is updated sequentially
+        q = self.q; v = self.v; p = self.p; b_a = self.b_a; b_g = self.b_g
 
         # Correct biases
-        accel_corrected = accel_raw - self.b_a
-        gyro_corrected = gyro_raw - self.b_g
+        accel_corrected = accel_raw - b_a
+        gyro_corrected = gyro_raw - b_g
 
         # --- Nominal State Update ---
-        # Rotation update
-        self.R = self.R @ so3_exp(gyro_corrected * dt)
+        # Quaternion update (with gyro_corrected)
+        dq_dt = 0.5 * np.array([
+            -q[1]*gyro_corrected[0] - q[2]*gyro_corrected[1] - q[3]*gyro_corrected[2],
+             q[0]*gyro_corrected[0] + q[2]*gyro_corrected[2] - q[3]*gyro_corrected[1],
+             q[0]*gyro_corrected[1] - q[1]*gyro_corrected[2] + q[3]*gyro_corrected[0],
+             q[0]*gyro_corrected[2] + q[1]*gyro_corrected[1] - q[2]*gyro_corrected[0]
+        ])
+        q_new = q + dq_dt * dt
+        q_new /= np.linalg.norm(q_new) # Normalization
 
-        # Acceleration in navigation frame using *new* R
-        a_nav = self.R @ accel_corrected + self.g
-        
-        # Velocity and Position update (using old v for p update consistency with ESKF form)
-        self.v = v_old + a_nav * dt
-        self.p = p_old + v_old * dt + 0.5 * a_nav * dt**2
+        # Rotation matrix (with updated q_new)
+        q_xyzw = convert_quaternion_order(q_new)
+        R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
+
+        # Velocity update (with accel_corrected and updated R)
+        a_nav = R_nav_from_body @ accel_corrected + self.g
+        v_new = v + a_nav * dt
+        p_new = p + v * dt + 0.5 * a_nav * dt**2 
 
         # Bias state remains constant (only error state is updated)
-        # Nominal biases are considered constant between updates; their uncertainty is handled in P.
+        b_a_new = b_a
+        b_g_new = b_g
 
         # --- Error State Covariance Update (Van Loan) ---
-        Phi, Qd = self._compute_van_loan_matrices(self.R, accel_corrected, gyro_corrected, dt)
+        Phi, Qd = self._compute_van_loan_matrices(R_nav_from_body, accel_corrected, gyro_corrected, dt)
 
         # Update covariance: P = Phi * P * Phi^T + Qd
         P_new = Phi @ self.P @ Phi.T + Qd
         # Ensure P remains symmetric
         self.P = 0.5 * (P_new + P_new.T)
 
-        # Nominal state (self.R, self.v, self.p) already updated above.
+        # Update nominal state
+        self.q = q_new
+        self.v = v_new
+        self.p = p_new
+        self.b_a = b_a_new
+        self.b_g = b_g_new
 
     def _update_common(self, delta_x):
-        """ Common nominal state update logic after an error state correction. """
-        delta_theta = delta_x[0:3]
-        self.R = self.R @ so3_exp(delta_theta)
+        """ Common state update logic """
+        
+        dq = delta_quaternion(delta_x[0:3])
+        self.q = quaternion_multiply(self.q, dq)
+        self.q /= np.linalg.norm(self.q) 
 
         self.v += delta_x[3:6]
         self.p += delta_x[6:9]
         self.b_a += delta_x[9:12]
         self.b_g += delta_x[12:15]
 
-
     def zero_velocity_update(self):
-        R_body_from_nav = self.R.T
+        q_xyzw = convert_quaternion_order(self.q)
+        R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
+        R_body_from_nav = R_nav_from_body.T
 
         # Measurement: velocity in navigation frame expressed in body frame
         v_body_predicted = R_body_from_nav @ self.v
@@ -327,9 +330,9 @@ class InvariantEKF_VIO:
 
         H = np.zeros((3, 15))
         # Jacobian of y = 0 - v_body, so Jacobian is -[v_body]x.
-        H[:, 0:3] = skew(v_body_predicted) 
+        H[:, 0:3] = -skew(R_body_from_nav @ self.v) 
         # Jacobian of R_body_from_nav @ v w.r.t delta_v
-        H[:, 3:6] = R_body_from_nav
+        H[:, 3:6] = R_body_from_nav            
 
         # Kalman update steps
         S = H @ self.P @ H.T + self.R_zupt
@@ -342,17 +345,21 @@ class InvariantEKF_VIO:
 
         delta_x = K @ y # Error state correction (15x1)
 
-        # Update nominal state with error correction
-        self._update_common(delta_x)
-        # Hard reset velocity to zero after correction
+        # Update state and covariance (Joseph Form)
+
+        # Velocity (self.v) will be zeroed when ZUPT is detected.
         self.v = np.zeros(3)
+        # Other states will be updated manually:
+        self.p += delta_x[6:9]  # According to H matrix, delta_x[6:9] should be zero
+        self.b_a += delta_x[9:12]
+        self.b_g += delta_x[12:15]
         
         I15 = np.eye(15)
         P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ self.R_zupt @ K.T # Joseph form
         self.P = 0.5 * (P_new + P_new.T) # Ensure symmetry
 
     def vision_posvel_update(self, p_meas, v_meas, R_vision):
-        """ Updates state with visual position and velocity measurements. R_vision is the measurement noise covariance. """
+        """ Update with visual position and velocity measurement. R_vision is provided externally. """
         y = np.concatenate([p_meas - self.p, v_meas - self.v]) # Measurement residual (6x1)
         H = np.zeros((6, 15))
         H[0:3, 6:9] = np.eye(3)  # H_p: Effect of position error on measurement
@@ -377,8 +384,10 @@ class InvariantEKF_VIO:
 
     def gravity_update(self, accel_raw):
         """ Updates accelerometer bias using gravity during static periods. """
-        # self.R is the current estimate of R_nav_from_body
-        R_body_from_nav = self.R.T
+        # Calculate R_nav_from_body from current state quaternion
+        q_xyzw = convert_quaternion_order(self.q)
+        R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
+        R_body_from_nav = R_nav_from_body.T
 
         # Expected gravity in body frame
         g_body = R_body_from_nav @ (-self.g) 
@@ -405,48 +414,410 @@ class InvariantEKF_VIO:
         K  = self.P @ H.T @ S_inv
         dx = K @ y
         
-        self._update_common(dx)
+        self.v += dx[3:6]     # According to H matrix, dx[3:6] should be zero
+        self.p += dx[6:9]     # According to H matrix, dx[6:9] should be zero
+        self.b_a += dx[9:12]
+        self.b_g += dx[12:15] # According to H matrix, dx[12:15] should be zero
 
         I15 = np.eye(15)
         P_new = (I15 - K @ H) @ self.P @ (I15 - K @ H).T + K @ R_acc @ K.T # Joseph form
         self.P = 0.5 * (P_new + P_new.T) # Ensure symmetry
 
+# =========================================================
+# UKF-ESKF Class (Scaled UKF + SUT)
+# =========================================================
+class ErrorStateKalmanFilterVIO_UKF(ErrorStateKalmanFilterVIO):
+    def __init__(self, initial_quaternion, initial_velocity, initial_position,
+                 initial_accel_bias=np.zeros(3), initial_gyro_bias=np.zeros(3),
+                 gravity_vector=np.array([0, 0, -9.81]),
+                 # Noise parameters (same as base class)
+                 tau_a=300.0, tau_g=1000.0,
+                 sigma_wa=2e-5, sigma_wg=2e-5,
+                 sigma_g=2e-4, sigma_a=2e-1):
+
+        # Call the base class constructor
+        super().__init__(initial_quaternion, initial_velocity, initial_position,
+                         initial_accel_bias, initial_gyro_bias, gravity_vector,
+                         tau_a, tau_g, sigma_wa, sigma_wg, sigma_g, sigma_a)
+
+        # UKF/SUT Parameters
+        self.n = 15                # error-state dimension [dq, dv, dp, dba, dbg]
+        self.α = 0.5               # SUT scaling parameter alpha
+        self.β = 2.0               # SUT scaling parameter beta (optimal for Gaussian)
+        self.κ = 3 - self.n        # SUT scaling parameter kappa (Merwe's recommendation: 3-n)
+        self.λ = self.α**2 * (self.n + self.κ) - self.n # Composite scaling parameter lambda (lambda)
+        
+        # Sigma point weights (Merwe's Scaled Unscented Transform)
+        self.Wm = np.full(2 * self.n + 1, 1.0 / (2 * (self.n + self.λ))) # Weights for mean
+        self.Wc = np.full(2 * self.n + 1, 1.0 / (2 * (self.n + self.λ))) # Weights for covariance
+        self.Wm[0] = self.λ / (self.n + self.λ)                         # Weight for mean (center point)
+        self.Wc[0] = self.Wm[0] + (1 - self.α**2 + self.β)             # Weight for covariance (center point)
+
+    def _sigma_points(self, x_mean, P):
+        """ Generates sigma points for the UKF based on mean and covariance. """
+        num_states = P.shape[0] # Should be self.n
+        if num_states != self.n:
+             print(f"Warning: P matrix dimension {P.shape} does not match state dimension {self.n} in _sigma_points. Ensure P matrix dimension matches state dimension.")
+
+        # Ensure P is positive semi-definite before Cholesky
+        P = 0.5 * (P + P.T) # Ensure symmetry
+        # Add small diagonal jitter for numerical stability
+        P_stable = P + np.eye(num_states) * 1e-9 
+
+        try:
+            # Use Cholesky decomposition.
+            S = np.linalg.cholesky((num_states + self.λ) * P_stable)
+        except np.linalg.LinAlgError:
+            print(f"Error: Cholesky decomposition failed in _sigma_points even after jitter.")
+            chi = np.zeros((2 * num_states + 1, num_states))
+            chi[0] = x_mean
+            return chi # Degenerate case
+
+        chi = np.zeros((2 * num_states + 1, num_states))
+        chi[0] = x_mean                   # Center sigma point
+        for i in range(num_states):
+            chi[i + 1]        = x_mean + S[:, i] # Positive direction sigma points 
+            chi[num_states + 1 + i] = x_mean - S[:, i] # Negative direction sigma points
+        return chi
+
+    # --- Helper functions using explicit nominal state ---
+    def _inject_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, delta_x):
+        """ Injects the error state delta_x into the provided nominal state. """
+        delta_theta = delta_x[0:3]
+        delta_v     = delta_x[3:6]
+        delta_p     = delta_x[6:9]
+        delta_ba    = delta_x[9:12]
+        delta_bg    = delta_x[12:15]
+
+        dq = delta_quaternion(delta_theta)
+        q_inj = quaternion_multiply(q_nom, dq)
+        q_inj /= np.linalg.norm(q_inj)
+
+        v_inj = v_nom + delta_v
+        p_inj = p_nom + delta_p
+        ba_inj = ba_nom + delta_ba
+        bg_inj = bg_nom + delta_bg
+
+        return q_inj, v_inj, p_inj, ba_inj, bg_inj
+
+    def _retract_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, q_inj, v_inj, p_inj, ba_inj, bg_inj):
+        """ Retracts the injected state back to an error state relative to the provided nominal state. """
+        # Ensure nominal quaternion is normalized
+        q_nom_norm = q_nom / np.linalg.norm(q_nom)
+        q_inj_norm = q_inj / np.linalg.norm(q_inj)
+
+        delta_q = quaternion_multiply(q_inj_norm, quaternion_conjugate(q_nom_norm))
+        delta_q /= np.linalg.norm(delta_q) # Ensure unit quaternion difference
+
+        # Convert quaternion difference to angle error vector (SO(3) logarithm)
+        if delta_q[0] < 0: # Ensure positive scalar part for acos
+             delta_q = -delta_q
+        
+        # Clamp angle slightly below 1.0 to avoid acos domain errors
+        cos_half_angle = np.clip(delta_q[0], -1.0, 1.0 - 1e-12) 
+        half_angle = np.arccos(cos_half_angle)
+        angle = 2 * half_angle
+        
+        sin_half_angle = np.sqrt(1.0 - cos_half_angle**2)
+
+        if sin_half_angle < 1e-9: # Check for near-zero rotation
+            delta_theta = np.zeros(3)
+        else:
+            axis = delta_q[1:] / sin_half_angle
+            delta_theta = angle * axis
+
+        # Retract other errors (Direct subtraction)
+        delta_v = v_inj - v_nom
+        delta_p = p_inj - p_nom
+        delta_ba = ba_inj - ba_nom
+        delta_bg = bg_inj - bg_nom
+
+        delta_x = np.concatenate([delta_theta, delta_v, delta_p, delta_ba, delta_bg])
+        return delta_x
+
+    def _propagate_nominal(self, q, v, p, b_a, b_g, gyro_raw, accel_raw, dt):
+        if dt <= 0:
+            # Return current state if dt is invalid
+            return q, v, p, b_a, b_g 
+
+        # Correct biases
+        accel_corrected = accel_raw - b_a
+        gyro_corrected = gyro_raw - b_g
+
+        # Quaternion update (Euler integration)
+        dq_dt = 0.5 * np.array([
+            -q[1]*gyro_corrected[0] - q[2]*gyro_corrected[1] - q[3]*gyro_corrected[2],
+             q[0]*gyro_corrected[0] + q[2]*gyro_corrected[2] - q[3]*gyro_corrected[1],
+             q[0]*gyro_corrected[1] - q[1]*gyro_corrected[2] + q[3]*gyro_corrected[0],
+             q[0]*gyro_corrected[2] + q[1]*gyro_corrected[1] - q[2]*gyro_corrected[0]
+        ])
+        q_new = q + dq_dt * dt
+        q_new /= np.linalg.norm(q_new) # Normalize
+
+        # Rotation matrix from the *new* quaternion
+        q_xyzw = convert_quaternion_order(q_new)
+        R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
+
+        # Velocity and Position update (using trapezoidal integration for better accuracy)
+        a_nav_start = R.from_quat(convert_quaternion_order(q)).as_matrix() @ accel_corrected + self.g
+        a_nav_end = R_nav_from_body @ accel_corrected + self.g
+        v_new = v + 0.5 * (a_nav_start + a_nav_end) * dt
+        p_new = p + v * dt + 0.25 * (a_nav_start + a_nav_end) * dt**2 # More accurate position update
+
+        # Biases remain constant during propagation in this model
+        b_a_new = b_a
+        b_g_new = b_g
+
+        return q_new, v_new, p_new, b_a_new, b_g_new
+
+    def predict(self, gyro_raw, accel_raw, dt):
+        """ Predicts the state using UKF for the error state. """
+        if dt <= 0:
+            return
+
+        # --- (a) Nominal State Propagation ---
+        # Store current nominal state before propagation
+        q_nom_old, v_nom_old, p_nom_old = self.q.copy(), self.v.copy(), self.p.copy()
+        ba_nom_old, bg_nom_old = self.b_a.copy(), self.b_g.copy()
+
+        # Propagate the current nominal state using the internal helper
+        q_new, v_new, p_new, ba_new, bg_new = self._propagate_nominal(
+            q_nom_old, v_nom_old, p_nom_old, ba_nom_old, bg_nom_old,
+            gyro_raw, accel_raw, dt
+        )
+        # Update nominal state immediately
+        self.q, self.v, self.p = q_new, v_new, p_new
+        self.b_a, self.b_g = ba_new, bg_new # Biases are constant in _propagate_nominal
+
+        # --- (b) UKF Error State Covariance Propagation ---
+        # Calculate necessary components for Qd based on OLD nominal state
+        accel_corrected_old = accel_raw - ba_nom_old
+        gyro_corrected_old = gyro_raw - bg_nom_old
+        q_xyzw_old = convert_quaternion_order(q_nom_old)
+        R_nav_from_body_old = R.from_quat(q_xyzw_old).as_matrix()
+
+        # Get discrete process noise Qd using Van Loan on OLD state
+        _, Qd = self._compute_van_loan_matrices(R_nav_from_body_old, accel_corrected_old, gyro_corrected_old, dt)
+
+        # 1. Generate sigma points for the error state (around zero mean)
+        # Use current covariance P before prediction
+        chi = self._sigma_points(np.zeros(self.n), self.P)
+        chi_pred = np.zeros_like(chi)
+
+        # 2. Propagate sigma points through the non-linear dynamics
+        for i, δx in enumerate(chi):
+            # Inject error sigma point into the *old* nominal state
+            q_inj, v_inj, p_inj, ba_inj, bg_inj = self._inject_explicit(q_nom_old, v_nom_old, p_nom_old, ba_nom_old, bg_nom_old, δx)
+
+            # Propagate the *injected* state one step
+            q_i_pred, v_i_pred, p_i_pred, ba_i_pred, bg_i_pred = self._propagate_nominal(
+                q_inj, v_inj, p_inj, ba_inj, bg_inj,
+                gyro_raw, accel_raw, dt
+            )
+
+            # Retract the propagated state back to an error state relative to the *new* nominal state (self.q, self.v, ...)
+            chi_pred[i] = self._retract_explicit(self.q, self.v, self.p, self.b_a, self.b_g,
+                                                 q_i_pred, v_i_pred, p_i_pred, ba_i_pred, bg_i_pred)
+
+        δx_pred_mean = np.sum(self.Wm[:, None] * chi_pred, axis=0)
+        delta_chi = chi_pred - δx_pred_mean # Shape (2n+1, n)
+        P_pred = Qd + np.sum(self.Wc[:, None, None] *
+                             delta_chi[..., None] @ delta_chi[:, None, :], axis=0)
+
+        # Ensure P remains symmetric
+        self.P = 0.5 * (P_pred + P_pred.T)
+
+    def ukf_update_posvel(self, z_meas, R_meas):
+        """ Updates the state using visual position and velocity measurements via UKF. """
+        # z_meas: 6x1 vector [p_meas, v_meas]
+        # R_meas: 6x6 measurement noise covariance matrix
+
+        # 1. Generate sigma points for the current error state (mean=0, cov=P)
+        chi = self._sigma_points(np.zeros(self.n), self.P)
+        
+        # 2. Propagate sigma points through the measurement function h(x)
+        #    h(x) extracts position and velocity from the full state obtained by injecting dx
+        Zsig = np.zeros((2 * self.n + 1, 6)) # Measurement sigma points (3 pos + 3 vel)
+        for i, δx in enumerate(chi):
+            # Inject error into current nominal state (self.q, self.v, ...)
+            q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
+                self.q, self.v, self.p, self.b_a, self.b_g, δx
+            )
+            # The measurement is simply the position and velocity of the injected state
+            Zsig[i, :3] = p_i
+            Zsig[i, 3:] = v_i
+
+        # 3. Calculate predicted measurement mean
+        z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
+
+        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz
+        delta_Z = Zsig - z_pred # Shape (2n+1, 6)
+        delta_chi = chi - np.zeros(self.n) # Shape (2n+1, n), error state mean is zero
+
+        Pzz = R_meas + np.sum(self.Wc[:, None, None] *
+                              delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
+
+        Pxz = np.sum(self.Wc[:, None, None] *
+                     delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
+
+        # 5. Calculate Kalman Gain K
+        try:
+            # Use pseudo-inverse for potentially ill-conditioned Pzz
+            Pzz_inv = np.linalg.pinv(Pzz) 
+        except np.linalg.LinAlgError:
+            print("Warning: UKF Vision Pzz matrix is singular! Skipping update.")
+            return
+        
+        K = Pxz @ Pzz_inv # Shape (n, 6)
+
+        # 6. Calculate corrected error state
+        residual = z_meas - z_pred
+        δx_corr = K @ residual # Shape (n,)
+
+        # 7. Update state covariance P (Joseph form recommended for stability)
+        P_updated = self.P - K @ Pzz @ K.T
+        # Ensure P remains symmetric and positive semi-definite
+        self.P = 0.5 * (P_updated + P_updated.T) 
+
+        # 8. Update nominal state using the common update function from the base class
+        self._update_common(δx_corr)
+
+    def zero_velocity_update(self):
+        """ Updates the state using Zero Velocity Update (ZUPT) via UKF. """
+        # Measurement is zero velocity in the body frame
+        z_meas = np.zeros(3)
+        R_meas = self.R_zupt # Use pre-defined ZUPT noise
+
+        # 1. Generate sigma points
+        chi = self._sigma_points(np.zeros(self.n), self.P)
+        
+        # 2. Propagate sigma points through measurement function h(x) = R_body_from_nav(q) @ v
+        Zsig = np.zeros((2 * self.n + 1, 3)) # Measurement sigma points (3 vel_body)
+        for i, δx in enumerate(chi):
+            # Inject error into current nominal state
+            q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
+                self.q, self.v, self.p, self.b_a, self.b_g, δx
+            )
+            # Calculate R_body_from_nav for this sigma point's orientation
+            q_xyzw_i = convert_quaternion_order(q_i)
+            R_nav_from_body_i = R.from_quat(q_xyzw_i).as_matrix()
+            R_body_from_nav_i = R_nav_from_body_i.T
+            # Measurement function: velocity in body frame
+            Zsig[i, :] = R_body_from_nav_i @ v_i
+
+        # 3. Calculate predicted measurement mean
+        z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
+
+        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz
+        delta_Z = Zsig - z_pred # Shape (2n+1, 3)
+        delta_chi = chi - np.zeros(self.n) # Shape (2n+1, n)
+
+        Pzz = R_meas + np.sum(self.Wc[:, None, None] *
+                              delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
+
+        Pxz = np.sum(self.Wc[:, None, None] *
+                     delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
+
+        # 5. Calculate Kalman Gain K
+        try:
+            Pzz_inv = np.linalg.pinv(Pzz)
+        except np.linalg.LinAlgError:
+            print("Warning: UKF ZUPT Pzz matrix is singular! Skipping update.")
+            return
+        
+        K = Pxz @ Pzz_inv # Shape (n, 3)
+
+        # 6. Calculate corrected error state
+        residual = z_meas - z_pred # Residual: 0 - predicted body velocity
+        δx_corr = K @ residual # Shape (n,)
+
+        # 7. Update state covariance P
+        P_updated = self.P - K @ Pzz @ K.T
+        self.P = 0.5 * (P_updated + P_updated.T)
+
+        # 8. Update nominal state
+        self._update_common(δx_corr)
+
+    def gravity_update(self, accel_raw):
+        """ Updates the accelerometer bias using gravity measurement via UKF during static periods. """
+        # Measurement is the raw accelerometer reading
+        z_meas = accel_raw
+        # Measurement noise is accelerometer white noise
+        R_meas = (self.sigma_a**2) * np.eye(3)
+
+        # 1. Generate sigma points
+        chi = self._sigma_points(np.zeros(self.n), self.P)
+
+        # 2. Propagate sigma points through measurement function
+
+        Zsig = np.zeros((2 * self.n + 1, 3)) # Measurement sigma points (3 acceleration)
+        for i, δx in enumerate(chi):
+            q_i, v_i, p_i, ba_i, bg_i = self._inject_explicit(
+                self.q, self.v, self.p, self.b_a, self.b_g, δx
+            )
+            # Calculate R_body_from_nav for this sigma point's orientation
+            q_xyzw_i = convert_quaternion_order(q_i)
+            R_nav_from_body_i = R.from_quat(q_xyzw_i).as_matrix()
+            R_body_from_nav_i = R_nav_from_body_i.T
+            # Expected gravity vector in body frame for this sigma point
+            g_body_i = R_body_from_nav_i @ (-self.g)
+            # Measurement function: expected accel reading = g_body + bias
+            Zsig[i, :] = g_body_i + ba_i
+
+        # 3. Calculate predicted measurement mean (expected accel reading)
+        z_pred = np.sum(self.Wm[:, None] * Zsig, axis=0)
+
+        # 4. Calculate innovation covariance Pzz and cross-covariance Pxz
+        delta_Z = Zsig - z_pred # Shape (2n+1, 3)
+        delta_chi = chi - np.zeros(self.n) # Shape (2n+1, n)
+
+        Pzz = R_meas + np.sum(self.Wc[:, None, None] *
+                              delta_Z[..., None] @ delta_Z[:, None, :], axis=0)
+
+        Pxz = np.sum(self.Wc[:, None, None] *
+                     delta_chi[..., None] @ delta_Z[:, None, :], axis=0)
+
+        # 5. Calculate Kalman Gain K
+        try:
+            Pzz_inv = np.linalg.pinv(Pzz)
+        except np.linalg.LinAlgError:
+            print("Warning: UKF Gravity Pzz matrix is singular! Skipping update.")
+            return
+
+        K = Pxz @ Pzz_inv # Shape (n, 3)
+
+        # 6. Calculate corrected error state
+        residual = z_meas - z_pred # Residual: actual accel - expected accel
+        δx_corr = K @ residual # Shape (n,)
+
+        # 7. Update state covariance P
+        P_updated = self.P - K @ Pzz @ K.T
+        self.P = 0.5 * (P_updated + P_updated.T)
+
+        # 8. Update nominal state
+        self._update_common(δx_corr)
+
 # === H Y B R I D  F I L T E R  C L A S S ==========================
-class InvariantHybridKF_VIO(InvariantEKF_VIO):
+class ErrorStateKalmanFilterVIO_Hybrid(ErrorStateKalmanFilterVIO):
     """
-    Hybrid Invariant Kalman Filter for VIO.
-    Uses Cubature Kalman Filter (CKF) to refine the orientation error covariance (P_tt)
-    and the base Invariant EKF (IEKF) for all other state components and cross-covariances.
+    Hybrid error-state filter using UKF for δθ and ESKF for the remaining 12 dimensions.
     """
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)        # Initialize InvariantEKF_VIO components
-        # --- CKF parameters: only for δθ (3 dimensions) ---
-        self.n_ckf = 3  # Dimension of the state for CKF (orientation error)
-        self.m_ckf = 2 * self.n_ckf  # Number of cubature points
-
-        # Weights for cubature points
-        self.W_ckf = np.full(self.m_ckf, 1.0 / self.m_ckf)
-
-        # Base cubature points (xi_j = sqrt(n_ckf) * [e_j; -e_j])
-        self.base_cubature_points = np.zeros((self.m_ckf, self.n_ckf))
-        sqrt_n_ckf = np.sqrt(self.n_ckf)
-        for j in range(self.n_ckf):
-            self.base_cubature_points[j, j] = sqrt_n_ckf
-            self.base_cubature_points[j + self.n_ckf, j] = -sqrt_n_ckf # type: ignore
-
-        # Initialize Cholesky factor (S_tt) of P_tt (orientation error covariance block)
+        super().__init__(*args, **kwargs)        # Initialize ESKF
+        # --- UKF parameters: only for δθ = 3 dimensions ---
+        self.n_h = 3                              # UKF dimension for orientation error
+        self.alpha_h, self.beta_h = 0.5, 2.0      # UKF scaling parameter alpha_h, UKF scaling parameter beta_h (standard for Gaussian)
+        self.kappa_h = 3 - self.n_h               # UKF scaling parameter kappa_h (Merwe's recommendation: 3 - n_h)
+        self.lambda_h = self.alpha_h**2 * (self.n_h + self.kappa_h) - self.n_h
+        w0_m = self.lambda_h / (self.n_h + self.lambda_h)
+        w0_c = w0_m + (1 - self.alpha_h**2 + self.beta_h)
+        wi    = 1.0 / (2 * (self.n_h + self.lambda_h))
+        self.Wm_h = np.hstack([w0_m, np.full(2*self.n_h, wi)])
+        self.Wc_h = np.hstack([w0_c, np.full(2*self.n_h, wi)])
+        
+        # Initialize Cholesky factor (S_tt) of P_tt (orientation error covariance) for SR-UKF        
         # P[0:3,0:3] is initially P_init_ori, which is 1e-6 * eye(3).
         self.S_tt = self._ensure_pd_and_chol(self.P[0:3,0:3].copy())
-
-    def _cubature_points_theta_from_S(self, S_tt_chol): # S_tt_chol is L such that P_tt = L L^T
-        """ Generates cubature points for the 3D orientation error (delta_theta) from its Cholesky factor. """
-        # Cubature points: X_j = S_tt_chol @ xi_j
-        # where xi_j are sqrt(n_ckf) * [e_1, -e_1, e_2, -e_2, ..., e_n, -e_n]
-        # And mean is assumed to be zero for error state
-        cub_pts = np.zeros((self.m_ckf, self.n_ckf))
-        for i in range(self.m_ckf):
-            cub_pts[i, :] = S_tt_chol @ self.base_cubature_points[i, :]
-        return cub_pts
 
     def _ensure_pd_and_chol(self, matrix, default_jitter=1e-9, min_eigenvalue_abs=1e-7):
         """ Ensures the matrix is positive definite and returns its Cholesky factor. """
@@ -463,94 +834,107 @@ class InvariantHybridKF_VIO(InvariantEKF_VIO):
             # Add jitter again for safety before the final Cholesky
             return np.linalg.cholesky(mat_pd + np.eye(mat.shape[0]) * default_jitter)
 
-    # ---------------- P R E D I C T (with CKF for orientation error covariance) --------------------
+    # ---------- Sigma points for δθ only (from Cholesky factor) ------------
+    def _sigma_points_theta_from_S(self, mean_3, S_tt_chol): # S_tt_chol is L such that P_tt = L L^T
+        term_matrix = np.sqrt(self.n_h + self.lambda_h) * S_tt_chol
+        chi = np.zeros((2*self.n_h+1, 3))
+        chi[0] = mean_3
+        for i in range(self.n_h):
+            chi[i+1]          = mean_3 + term_matrix[:, i]
+            chi[self.n_h+1+i] = mean_3 - term_matrix[:, i]
+        return chi
+
+    # ---------------- P R E D I C T (updated with SR-UKF) --------------------
     def predict(self, gyro_raw, accel_raw, dt):
         if dt <= 0: return
 
-        # ➊  -- Perform full IEKF prediction (updates nominal state and full P matrix) --
-        R_old, v_old, p_old = self.R.copy(), self.v.copy(), self.p.copy()
-        ba_old, bg_old = self.b_a.copy(), self.b_g.copy()
-        super().predict(gyro_raw, accel_raw, dt) # Base IEKF predict updates self.R, self.v, self.p and self.P
+        # ➊  -- Update current nominal state ESKF-style --
+        q_old, v_old, p_old = self.q.copy(), self.v.copy(), self.p.copy()
+        ba_old, bg_old      = self.b_a.copy(), self.b_g.copy()
+        super().predict(gyro_raw, accel_raw, dt) # ESKF predict (self.P is updated, including P[0:3,0:3])
 
-        # ➋ -- Get the Cholesky factor of the orientation error covariance P[0:3,0:3] updated by IEKF --
+        # ➋ -- Update self.S_tt from P[0:3,0:3] which was updated by the ESKF predict step --
         P_tt_after_eskf = self.P[0:3,0:3].copy()
         self.S_tt = self._ensure_pd_and_chol(P_tt_after_eskf)
 
-        # ➌  -- Refine P[0:3,0:3] using CKF propagation for orientation error (delta_theta) --
-        # Generate cubature points for delta_theta (mean is zero) using S_tt from IEKF update
-        cubature_delta_theta_points = self._cubature_points_theta_from_S(self.S_tt)
-        propagated_delta_theta_points = np.zeros((self.m_ckf, self.n_ckf))
+        # ➌  -- UKF propagation for δθ covariance block only (using S_tt) to refine P[0:3,0:3] --
+        sigma_theta = self._sigma_points_theta_from_S(np.zeros(3), self.S_tt)
+        sigma_theta_pred = np.zeros_like(sigma_theta)
 
-        for i, dtheta in enumerate(cubature_delta_theta_points):
-            # Inject orientation error cubature point into old nominal rotation R_old
-            R_i = R_old @ so3_exp(dtheta)
-            # Propagate the full state starting from perturbed R_i and old v,p,ba,bg
-            # This uses the same nominal propagation model as the IEKF.
-            R_i_prop, v_i_prop, p_i_prop, ba_i_prop, bg_i_prop = self._propagate_nominal(
-                R_i, v_old, p_old, ba_old, bg_old, gyro_raw, accel_raw, dt
+        for i, dtheta in enumerate(sigma_theta):
+            # Inject orientation error sigma point into old nominal quaternion
+            q_i = quaternion_multiply(q_old, delta_quaternion(dtheta))
+            q_i, _, _, _, _ = self._propagate_nominal( # This _propagate_nominal is a helper function (copied from UKF)
+                q_i, v_old, p_old, ba_old, bg_old, gyro_raw, accel_raw, dt
             )
-            # Retract the propagated perturbed state against the new IEKF nominal state (self.R, self.v, etc.)
-            # to get the propagated error cubature point in the Lie algebra.
-            delta_x_retracted = self._retract_explicit(
-                self.R, self.v, self.p, self.b_a, self.b_g, # New nominal state
-                R_i_prop, v_i_prop, p_i_prop, ba_i_prop, bg_i_prop # Propagated perturbed state
-            )
-            dtheta_new = delta_x_retracted[0:3]
-            propagated_delta_theta_points[i] = dtheta_new
+            
+            dtheta_new = self._retract_explicit( 
+                self.q, self.v, self.p, self.b_a, self.b_g, 
+                q_i, v_old, p_old, ba_old, bg_old 
+ 
+            )[0:3]
+            sigma_theta_pred[i] = dtheta_new
 
-        # Calculate predicted mean of propagated delta_theta points
-        # This mean should ideally be close to zero.
-        mean_propagated_delta_theta = np.sum(self.W_ckf[:, None] * propagated_delta_theta_points, axis=0)
-
-        # Calculate refined P_tt using CKF
-        P_tt_ckf_refined = np.zeros((self.n_ckf, self.n_ckf))
-        for i in range(self.m_ckf):
-            diff = propagated_delta_theta_points[i] - mean_propagated_delta_theta
-            P_tt_ckf_refined += self.W_ckf[i] * np.outer(diff, diff)
+        mean_theta = np.sum(self.Wm_h[:,None] * sigma_theta_pred, axis=0)
+        dSigma = sigma_theta_pred - mean_theta
+        P_tt_ukf_refined = np.sum(self.Wc_h[:,None,None] * dSigma[...,None] @ dSigma[:,None,:], axis=0)
        
-        self.P[0:3, 0:3] = 0.5*(P_tt_ckf_refined + P_tt_ckf_refined.T) # Make symmetric
-        self.S_tt = self._ensure_pd_and_chol(self.P[0:3,0:3].copy())   # Update S_tt from the CKF-refined P_tt
+        self.P[0:3, 0:3] = 0.5*(P_tt_ukf_refined + P_tt_ukf_refined.T) # Make symmetric
+        self.S_tt = self._ensure_pd_and_chol(self.P[0:3,0:3].copy())   # Update S_tt from the new P_tt
 
-    # --- Helper functions for CKF part (nominal state propagation and retraction) ---
-    def _propagate_nominal(self, R_curr, v_curr, p_curr, b_a_curr, b_g_curr, gyro_raw, accel_raw, dt):
-        """ Helper to propagate a given nominal state (R,v,p,ba,bg) using IMU measurements. Used by CKF. """
+    # --- Helper functions needed from UKF ---
+    def _propagate_nominal(self, q, v, p, b_a, b_g, gyro_raw, accel_raw, dt):
+        """ Propagates a given nominal state using IMU measurements. (Copied from UKF) """
         if dt <= 0:
-            return R_curr, v_curr, p_curr, b_a_curr, b_g_curr
+            return q, v, p, b_a, b_g
+        accel_corrected = accel_raw - b_a
+        gyro_corrected = gyro_raw - b_g
+        dq_dt = 0.5 * np.array([
+            -q[1]*gyro_corrected[0] - q[2]*gyro_corrected[1] - q[3]*gyro_corrected[2],
+             q[0]*gyro_corrected[0] + q[2]*gyro_corrected[2] - q[3]*gyro_corrected[1],
+             q[0]*gyro_corrected[1] - q[1]*gyro_corrected[2] + q[3]*gyro_corrected[0],
+             q[0]*gyro_corrected[2] + q[1]*gyro_corrected[1] - q[2]*gyro_corrected[0]
+        ])
+        q_new = q + dq_dt * dt
+        q_new /= np.linalg.norm(q_new)
+        q_xyzw = convert_quaternion_order(q_new)
+        R_nav_from_body = R.from_quat(q_xyzw).as_matrix()
+        a_nav_start = R.from_quat(convert_quaternion_order(q)).as_matrix() @ accel_corrected + self.g
+        a_nav_end = R_nav_from_body @ accel_corrected + self.g
+        v_new = v + 0.5 * (a_nav_start + a_nav_end) * dt
+        p_new = p + v * dt + 0.25 * (a_nav_start + a_nav_end) * dt**2
+        b_a_new = b_a
+        b_g_new = b_g
+        return q_new, v_new, p_new, b_a_new, b_g_new
 
-        accel_corrected = accel_raw - b_a_curr
-        gyro_corrected = gyro_raw - b_g_curr
-
-        R_new = R_curr @ so3_exp(gyro_corrected * dt)
-
-        a_nav_start = R_curr @ accel_corrected + self.g
-        a_nav_end = R_new @ accel_corrected + self.g
-        v_new = v_curr + 0.5 * (a_nav_start + a_nav_end) * dt
-        p_new = p_curr + v_curr * dt + 0.25 * (a_nav_start + a_nav_end) * dt**2
-        
-        b_a_new = b_a_curr # Biases are random walks, nominal part constant here
-        b_g_new = b_g_curr
-        return R_new, v_new, p_new, b_a_new, b_g_new
-
-    def _retract_explicit(self, R_nom, v_nom, p_nom, ba_nom, bg_nom, R_inj, v_inj, p_inj, ba_inj, bg_inj):
-        """ Helper to retract an 'injected/perturbed' state to an error state relative to a nominal state. Used by CKF. """
-        # Rotation error
-        delta_R_matrix = R_nom.T @ R_inj
-        delta_theta = so3_log(delta_R_matrix)
-
-        # Other errors
+    def _retract_explicit(self, q_nom, v_nom, p_nom, ba_nom, bg_nom, q_inj, v_inj, p_inj, ba_inj, bg_inj):
+        """ Retracts the injected state back to an error state relative to the provided nominal state. (Copied from UKF) """
+        q_nom_norm = q_nom / np.linalg.norm(q_nom)
+        q_inj_norm = q_inj / np.linalg.norm(q_inj)
+        delta_q = quaternion_multiply(q_inj_norm, quaternion_conjugate(q_nom_norm))
+        delta_q /= np.linalg.norm(delta_q)
+        if delta_q[0] < 0: delta_q = -delta_q
+        cos_half_angle = np.clip(delta_q[0], -1.0, 1.0 - 1e-12)
+        half_angle = np.arccos(cos_half_angle)
+        angle = 2 * half_angle
+        sin_half_angle = np.sqrt(1.0 - cos_half_angle**2)
+        if sin_half_angle < 1e-9:
+            delta_theta = np.zeros(3)
+        else:
+            axis = delta_q[1:] / sin_half_angle
+            delta_theta = angle * axis
         delta_v = v_inj - v_nom
         delta_p = p_inj - p_nom
         delta_ba = ba_inj - ba_nom
         delta_bg = bg_inj - bg_nom
         delta_x = np.concatenate([delta_theta, delta_v, delta_p, delta_ba, delta_bg])
         return delta_x
-
     # --- End of  helper functions ---
 
-    # --------- Measurement updates call base IEKF methods -----------
+    # --------- Measurement: visual p,v (UKF for δθ only) -----------
     def vision_posvel_update(self, p_meas, v_meas, R_vis):
-        # The hybrid CKF refinement is only in the predict step for orientation covariance.
-        # Measurement updates use the standard IEKF formulation from the base class.
+        # Linear parts (velocity, position, biases) use standard ESKF update.
+        # The orientation part (δθ) is implicitly updated via the full covariance matrix P.
         y = np.concatenate([p_meas - self.p, v_meas - self.v])
         H = np.zeros((6,15)); H[0:3,6:9]=np.eye(3); H[3:6,3:6]=np.eye(3)
         S = H @ self.P @ H.T + R_vis
@@ -559,8 +943,11 @@ class InvariantHybridKF_VIO(InvariantEKF_VIO):
         self._update_common(delta_x)               # Update nominal state + biases
         I15=np.eye(15); self.P = (I15-K@H)@self.P@(I15-K@H).T + K@R_vis@K.T
 
+    # --------- Measurement: ZUPT (UKF for δθ only) -----------------
     def zero_velocity_update(self):
-        super().zero_velocity_update() # Uses base IEKF ZUPT update
+        # For ZUPT, the measurement (body velocity) is linear w.r.t. velocity error and orientation error.
+        # The standard ESKF update is sufficient here, as non-linearities are less critical.
+        super().zero_velocity_update()             # Base ESKF update
 
 # =========================================================
 # CSV Results and Summary Functions
@@ -618,7 +1005,7 @@ def save_summary_to_csv(results, seq_name, args, filename):
         df_summary.to_csv(filename, index=False, mode="w", header=True)
 
 # =========================================================
-# VIO Data Processing Function using Invariant Hybrid KF
+# ESKF-Based VIO Data Processing Function
 # =========================================================
 def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     # Read IMU data
@@ -658,6 +1045,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     else:
         initial_position = np.zeros(3)
 
+
     initial_gyro_bias = np.array([
         imu_data[' b_w_RS_S_x [rad s^-1]'].iloc[0],
         imu_data[' b_w_RS_S_y [rad s^-1]'].iloc[0],
@@ -671,7 +1059,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     ]) if all(c in imu_data.columns for c in [' b_a_RS_S_x [m s^-2]', ' b_a_RS_S_y [m s^-2]', ' b_a_RS_S_z [m s^-2]']) else np.zeros(3)
     
     # --- Instantiate the Hybrid version ---
-    iekf = InvariantHybridKF_VIO(initial_quaternion, initial_velocity, initial_position,
+    eskf = ErrorStateKalmanFilterVIO_Hybrid(initial_quaternion, initial_velocity, initial_position,
                                             initial_accel_bias=initial_accel_bias,
                                             initial_gyro_bias=initial_gyro_bias)
 
@@ -692,7 +1080,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     true_positions = []
     true_accel_biases = []
     true_gyro_biases = []
-    R_prev_for_continuity_conversion = iekf.R.copy() # For converting back to quat for logging
+    q_prev = initial_quaternion.copy()
 
     # --- ZUPT settings ---
     WIN_LEN_STATIC  = args.zupt_win          
@@ -718,7 +1106,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         ], dtype=float)
         
         # Prediction step (with raw data) - Calls the predict method of the instantiated filter (Hybrid in this case)
-        iekf.predict(gyro_raw, accel_raw, dt)
+        eskf.predict(gyro_raw, accel_raw, dt)
         current_time = row['timestamp']
 
         # --- Static detection & ZUPT / Gravity update ---
@@ -737,8 +1125,8 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             gyro_norm_std = g_norm.std()
 
             if (acc_norm_std < ACC_STD_THR) and (gyro_norm_std < GYRO_STD_THR):
-                iekf.zero_velocity_update()
-                iekf.gravity_update(accel_raw) 
+                eskf.zero_velocity_update()
+                eskf.gravity_update(accel_raw) 
                 window_duration = WIN_LEN_STATIC * dt # Approximate window duration
                 total_static_duration += window_duration
                 # Clear windows after ZUPT/Gravity update to detect next static period
@@ -790,7 +1178,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                         sigma_p_val = sigma_p_map[chosen_key]
 
             # --- Logic for calculating velocity from consecutive positions for visual velocity measurement ---
-            v_meas_to_use = iekf.v # Default to current filter velocity
+            v_meas_to_use = eskf.v # Default to current filter velocity (for an ineffective update if dt_vis is too small)
             dt_vis = 0.0
             if prev_vis_time is not None and prev_vis_pos is not None:
                 dt_vis = (t_vis - prev_vis_time).total_seconds()
@@ -798,8 +1186,8 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                     v_meas_to_use = (p_meas - prev_vis_pos) / dt_vis
 
             I3 = np.eye(3)
-            current_sigma_p_sq = iekf.R_vis_6d[0,0] # Default sigma_p squared
-            current_sigma_v_sq = iekf.R_vis_6d[3,3] # Default sigma_v squared
+            current_sigma_p_sq = eskf.R_vis_6d[0,0] # Default sigma_p squared
+            current_sigma_v_sq = eskf.R_vis_6d[3,3] # Default sigma_v squared
 
             if sigma_p_val is not None:
                 current_sigma_p_sq = sigma_p_val**2
@@ -812,24 +1200,21 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                 [np.zeros((3,3)), current_sigma_v_sq * I3]
             ])
 
-            iekf.vision_posvel_update(p_meas, v_meas_to_use, R_vision_current)
+            eskf.vision_posvel_update(p_meas, v_meas_to_use, R_vision_current)
 
             prev_vis_pos = p_meas
             prev_vis_time = t_vis
             visual_index += 1
 
-        # Convert current R to quaternion for logging and continuity
-        q_current_est_wxyz = R_to_quat_wxyz(iekf.R)
-        q_prev_for_continuity_wxyz = R_to_quat_wxyz(R_prev_for_continuity_conversion)
-        q_est = ensure_quaternion_continuity(q_current_est_wxyz, q_prev_for_continuity_wxyz)
-        
+        q_est = ensure_quaternion_continuity(eskf.q, q_prev)
         estimated_quaternions.append(q_est)
-        estimated_velocities.append(iekf.v.copy())
-        estimated_positions.append(iekf.p.copy())
-        estimated_accel_biases.append(iekf.b_a.copy()) 
-        estimated_gyro_biases.append(iekf.b_g.copy())  
+        estimated_velocities.append(eskf.v.copy())
+        estimated_positions.append(eskf.p.copy())
+        estimated_accel_biases.append(eskf.b_a.copy()) 
+        estimated_gyro_biases.append(eskf.b_g.copy())  
         timestamps.append(row['timestamp'].value)
-        R_prev_for_continuity_conversion = iekf.R.copy() # Update for next iteration
+
+        q_prev = q_est
 
         if all(col in imu_data.columns for col in [' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []']):
             q_gt = row[[' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []']].values
@@ -989,7 +1374,7 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
 def run_sequence(seq_name, config, summary_file):
     imu_file_path = f"imu_interp_gt/{seq_name}_imu_with_interpolated_groundtruth.csv"
     sequence_number_str = seq_name[2:]  # Example: MH01 -> "01"    
-    visual_file_path = f"VO/vo_pred_super_512/mh{int(sequence_number_str)}_ns.csv"    
+    visual_file_path = f"VO/vo_pred_super_best/mh{int(sequence_number_str)}_ns.csv"    
 
     if args.adaptive:
         sigma_v_map = compute_adaptive_sigma_v(config, visual_file_path, seq_name)
@@ -1029,6 +1414,114 @@ def run_sequence(seq_name, config, summary_file):
     print(f"[{seq_name}] Total Execution Time: {end_time - start_time:.4f} s")
 
 # =========================================================
+# GENETIC ALGORITHM OPTIMIZATION FUNCTIONS
+# =========================================================
+ga_total_start_time = 0
+generation_start_time = 0
+
+# Store the original args when the script starts
+# Helper function for GA fitness evaluation (to be run in parallel for each sequence)
+def evaluate_single_sequence_for_ga(seq_name_ga, current_solution_config, current_args_for_process):
+    """
+    Evaluates a single sequence with a given configuration for GA fitness.
+    This function is designed to be called by ProcessPoolExecutor.
+    """
+    imu_file_path_ga = f"imu_interp_gt/{seq_name_ga}_imu_with_interpolated_groundtruth.csv"
+    sequence_number_str_ga = seq_name_ga[2:]
+    # Ensure this path matches the one in run_sequence
+    visual_file_path_ga = f"VO/vo_pred_super_best/mh{int(sequence_number_str_ga)}_ns.csv" 
+
+    sigma_v_map_ga_seq = compute_adaptive_sigma_v(current_solution_config, visual_file_path_ga, seq_name_ga)
+    sigma_p_map_ga_seq = compute_adaptive_sigma_p(current_solution_config, visual_file_path_ga, seq_name_ga)
+
+   # Create a temporary args object for this specific evaluation
+    temp_args_for_process = copy.deepcopy(current_args_for_process) # Already a deepcopy
+
+
+    results_seq = process_vio_data(imu_file_path_ga, visual_file_path_ga, sigma_v_map_ga_seq, sigma_p_map_ga_seq)
+
+    if results_seq is None or results_seq["rmse_pos"] is None:
+        return float('inf') # Return a high RMSE for failed runs
+
+    mean_rmse_pos_seq = np.mean(results_seq["rmse_pos"]) if isinstance(results_seq["rmse_pos"], np.ndarray) else float('inf')
+    return mean_rmse_pos_seq
+
+def fitness_func_pygad(ga_instance, solution, solution_idx):
+    global config, args # Allow modification of global config/args for this call
+    
+
+    temp_config = {
+        'alpha_v': solution[3], 'beta_p': original_args_for_ga.beta_p,
+        'epsilon_v': solution[4], 'epsilon_p': original_args_for_ga.epsilon_p,
+        'zeta_H': solution[5], 'zeta_L': original_args_for_ga.zeta_L, # Use original zeta_L
+        'zeta_p': original_args_for_ga.zeta_p, 'w_thr': solution[6],
+        'd_thr': original_args_for_ga.d_thr, 's': original_args_for_ga.s, # Use original s and d_thr
+        'entropy_norm_min': solution[0], 'pose_chi2_norm_min': solution[1],
+        'culled_norm_min': solution[2],
+    }
+
+    backup_args_values = {
+        'entropy_norm_min': args.entropy_norm_min, 'pose_chi2_norm_min': args.pose_chi2_norm_min,
+        'culled_norm_min': args.culled_norm_min, 'alpha_v': args.alpha_v,
+        'epsilon_v': args.epsilon_v, 'zeta_H': args.zeta_H, 'w_thr': args.w_thr,
+        'adaptive': args.adaptive
+    }
+
+    args.entropy_norm_min = solution[0]
+    args.pose_chi2_norm_min = solution[1]
+    args.culled_norm_min = solution[2]
+    args.alpha_v = solution[3]
+    args.epsilon_v = solution[4]
+    args.zeta_H = solution[5]
+    args.w_thr = solution[6]
+    args.adaptive = True # GA optimization assumes adaptive mode
+
+    original_save_main_csv_flag = globals().get('SAVE_RESULTS_CSV', False)
+    globals()['SAVE_RESULTS_CSV'] = True
+
+    sequences_for_ga = ["MH04", "MH05"]
+    all_rmses_pos = []
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=len(sequences_for_ga)) as executor:
+        future_to_seq = {
+            executor.submit(evaluate_single_sequence_for_ga, seq_name, temp_config, copy.deepcopy(args)): seq_name
+            for seq_name in sequences_for_ga
+        }
+        for future in concurrent.futures.as_completed(future_to_seq):
+            seq_name = future_to_seq[future]
+            try:
+                rmse_pos_seq = future.result()
+                if not (np.isnan(rmse_pos_seq) or np.isinf(rmse_pos_seq)):
+                    all_rmses_pos.append(rmse_pos_seq)
+                else:
+                    all_rmses_pos.append(float('inf')) 
+            except Exception as exc:
+                all_rmses_pos.append(float('inf')) 
+
+    for key, value in backup_args_values.items():
+        setattr(args, key, value)
+    globals()['SAVE_RESULTS_CSV'] = original_save_main_csv_flag
+
+    if not all_rmses_pos or all(np.isinf(r) or np.isnan(r) for r in all_rmses_pos):
+        return 0.0
+    
+    valid_rmses = [r for r in all_rmses_pos if not (np.isinf(r) or np.isnan(r))]
+    average_rmse_pos = np.mean(valid_rmses) if valid_rmses else float('inf')
+
+    fitness = 1.0 / average_rmse_pos if average_rmse_pos > 1e-6 and not np.isinf(average_rmse_pos) else 0.0
+    return fitness
+
+def on_generation_callback(ga_instance):
+    global generation_start_time, ga_total_start_time
+    current_gen_time = time.time() - generation_start_time
+    total_elapsed_time = time.time() - ga_total_start_time
+    avg_time_per_gen = total_elapsed_time / ga_instance.generations_completed if ga_instance.generations_completed > 0 else current_gen_time
+    remaining_gens = ga_instance.num_generations - ga_instance.generations_completed
+    estimated_remaining_time = avg_time_per_gen * remaining_gens
+    print(f"Gen {ga_instance.generations_completed} | Best Fitness: {ga_instance.best_solution()[1]:.4f} | Gen Time: {current_gen_time:.2f}s | Est. Rem: {time.strftime('%H:%M:%S', time.gmtime(estimated_remaining_time))}")
+    generation_start_time = time.time()
+
+# =========================================================
 # MAIN PROGRAM: Run sequences in parallel
 # =========================================================
 if __name__ == "__main__":
@@ -1036,58 +1529,171 @@ if __name__ == "__main__":
     summary_file = SAVE_RESULTS_CSV_NAME
 
     # --- Initial CSV Check ---
-    results_exist = False
-    if os.path.exists(summary_file) and SAVE_RESULTS_CSV:
-        try:
-            df_results = pd.read_csv(summary_file)
-            required_cols_check = [
-                "Sequence", "Alpha_v", "Epsilon_v", "Zeta_H", "Zeta_L",
-                "Beta_p", "Epsilon_p", "Zeta_p", 
-                "Entropy_Norm_Min", "Pose_Chi2_Norm_Min", "Culled_Norm_Min",
-                "W_THR", "D_THR", "Activation_Function", "Adaptive"
-            ]
-            if all(col in df_results.columns for col in required_cols_check):
-                filtered_df = df_results[
-                    (df_results["Alpha_v"] == args.alpha_v) &                    
-                    (df_results["Epsilon_v"] == args.epsilon_v) &
-                    (df_results["Zeta_H"] == args.zeta_H) &
-                    (df_results["Zeta_L"] == args.zeta_L) &
-                    (df_results["Beta_p"] == args.beta_p) &
-                    (df_results["Epsilon_p"] == args.epsilon_p) &
-                    (df_results["Zeta_p"] == args.zeta_p) &
-                    (df_results["Entropy_Norm_Min"] == args.entropy_norm_min) & 
-                    (df_results["Pose_Chi2_Norm_Min"] == args.pose_chi2_norm_min) & 
-                    (df_results["Culled_Norm_Min"] == args.culled_norm_min) & 
-                    (df_results["W_THR"] == args.w_thr) &
-                    (df_results["D_THR"] == args.d_thr) &
-                    (df_results["Activation_Function"] == f"casef (s={args.s})") &
-                    (df_results["Adaptive"] == args.adaptive)
+    # (This check is for manual runs, GA runs will bypass or handle results differently)
+    if not args.optimize_ga: # Perform CSV check only if not in GA mode
+        results_exist = False
+        # Note: SAVE_RESULTS_CSV is False by default in this script.
+        # If you want this check to run, ensure SAVE_RESULTS_CSV is True for normal runs.
+        if os.path.exists(summary_file) and globals().get('SAVE_RESULTS_CSV', False):
+            try:
+                df_results = pd.read_csv(summary_file)
+                required_cols_check = [ 
+                    "Sequence", "Alpha_v", "Epsilon_v", "Zeta_H", "Zeta_L",
+                    "Beta_p", "Epsilon_p", "Zeta_p", 
+                    "Entropy_Norm_Min", "Pose_Chi2_Norm_Min", "Culled_Norm_Min",
+                    "W_THR", "D_THR", "Activation_Function", "Adaptive"
                 ]
-                
-                existing_sequences = set(filtered_df["Sequence"].unique())
-                # Check if all sequences exist
-                if set(sequences).issubset(existing_sequences):
-                    results_exist = True
-            else:
-                 print(f"Warning: Expected columns are missing in {summary_file} (Were normalization parameters checked?). Skipping check.")
+                if all(col in df_results.columns for col in required_cols_check):
+                    # Create filter based on all args
+                    filtered_df = df_results[
+                        (df_results["Alpha_v"] == args.alpha_v) &
+                        (df_results["Epsilon_v"] == args.epsilon_v) &
+                        (df_results["Zeta_H"] == args.zeta_H) &
+                        (df_results["Zeta_L"] == args.zeta_L) &
+                        (df_results["Beta_p"] == args.beta_p) &
+                        (df_results["Epsilon_p"] == args.epsilon_p) &
+                        (df_results["Zeta_p"] == args.zeta_p) &
+                        (df_results["Entropy_Norm_Min"] == args.entropy_norm_min) &
+                        (df_results["Pose_Chi2_Norm_Min"] == args.pose_chi2_norm_min) &
+                        (df_results["Culled_Norm_Min"] == args.culled_norm_min) &
+                        (df_results["W_THR"] == args.w_thr) &
+                        (df_results["D_THR"] == args.d_thr) &
+                        (df_results["Activation_Function"] == f"casef (s={args.s})") &
+                        (df_results["Adaptive"] == args.adaptive)
+                    ]
+                    existing_sequences = set(filtered_df["Sequence"].unique())
+                    if set(sequences).issubset(existing_sequences):
+                        results_exist = True
+                else:
+                    print(f"Warning: Expected columns are missing in {summary_file}. Skipping check.")
+            except pd.errors.EmptyDataError:
+                print(f"Warning: {summary_file} is empty. Skipping check.")
+            except Exception as e:
+                print(f"Warning: Error reading {summary_file}: {e}. Skipping check.")
 
-        except pd.errors.EmptyDataError:
-            print(f"Warning: {summary_file} is empty. Skipping check.")
+        if results_exist:
+            print(f"Results for this parameter combination already exist in '{summary_file}'.")
+            param_summary_for_msg = (
+                f"alpha_v={args.alpha_v}, epsilon_v={args.epsilon_v}, zeta_H={args.zeta_H}, zeta_L={args.zeta_L}, "
+                f"beta_p={args.beta_p}, epsilon_p={args.epsilon_p}, zeta_p={args.zeta_p}, "
+                f"entropy_norm_min={args.entropy_norm_min}, pose_chi2_norm_min={args.pose_chi2_norm_min}, culled_norm_min={args.culled_norm_min}, "
+                f"w_thr={args.w_thr}, d_thr={args.d_thr}, s={args.s}, adaptive={args.adaptive}"
+            )
+            print(f"Parameters: {param_summary_for_msg}")
+            print("The software will not be run for these parameters.")
+            sys.exit(0)
+
+    if args.optimize_ga:
+        print("Starting Genetic Algorithm Optimization...")
+        # original_args_for_ga is now defined at module level and already copied.
+
+        # Parameters to optimize: [entropy_norm_min, pose_chi2_norm_min, culled_norm_min, alpha_v, epsilon_v, zeta_H, w_thr]
+        initial_solution = [
+            args.entropy_norm_min, args.pose_chi2_norm_min, args.culled_norm_min,
+            args.alpha_v, args.epsilon_v, args.zeta_H, args.w_thr
+        ]
+
+        gene_space = [
+            {'low': 0, 'high': 1.0},    # entropy_norm_min
+            {'low': 0, 'high': 2.5},    # pose_chi2_norm_min
+            {'low': -0.5, 'high': 1.0},    # culled_norm_min
+            {'low': 2, 'high': 20.0},   # alpha_v
+            {'low': 2, 'high': 10.0},   # epsilon_v
+            {'low': 0.1, 'high': 2.0},    # zeta_H
+            {'low': 0.15, 'high': 0.30}    # w_thr (ensure w_thr < d_thr, d_thr is default 1.0)
+        ]
+
+        num_genes = len(initial_solution)
+        sol_per_pop = 30 
+        num_parents_mating = 10
+        num_generations = 50 
+        keep_parents = 10 
+
+        # Determine the number of parallel GA evaluations
+        num_sequences_per_ga_eval = len(sequences) # Typically 5, use the globally defined 'sequences'
+        if args.ga_outer_workers == 0:
+            num_ga_parallel_evals = max(1, os.cpu_count() // num_sequences_per_ga_eval)
+        else:
+            num_ga_parallel_evals = args.ga_outer_workers
+
+        initial_population = [initial_solution.copy() for _ in range(sol_per_pop)]
+
+        ga_instance = pygad.GA(num_generations=num_generations,
+                               num_parents_mating=num_parents_mating,
+                               fitness_func=fitness_func_pygad,
+                               sol_per_pop=sol_per_pop,
+                               num_genes=num_genes,
+                               gene_space=gene_space,
+                               initial_population=initial_population,
+                               parent_selection_type="sss", 
+                               keep_parents=keep_parents,
+                               crossover_type="single_point",
+                               mutation_type="random",
+                               mutation_percent_genes=30, 
+                               on_generation=on_generation_callback,
+                               parallel_processing=['process', num_ga_parallel_evals] if num_ga_parallel_evals > 1 else None
+                               )
+        
+        print(f"Estimating time for one fitness evaluation (running for {len(sequences)} sequences in parallel)...")
+        eval_start_time = time.time()
+        try:
+            fitness_func_pygad(ga_instance, initial_solution, 0)
         except Exception as e:
-            print(f"Warning: Error reading {summary_file}: {e}. Skipping check.")
+            print(f"Error during estimation call: {e}. This might be due to initial setup or file paths.")
+        one_eval_time = time.time() - eval_start_time
+        print(f"Approx. time for one fitness evaluation: {one_eval_time:.2f} seconds.")
+        
+        approx_total_evals = sol_per_pop + (num_generations * (sol_per_pop - (keep_parents if keep_parents > 0 else 0) ))
+        estimated_total_cpu_time = one_eval_time * approx_total_evals
+        
+        if num_ga_parallel_evals > 1:
+            estimated_wall_clock_time = estimated_total_cpu_time / num_ga_parallel_evals
+            print(f"Estimated total GA wall-clock duration for {num_generations} generations with {num_ga_parallel_evals} parallel GA workers: {time.strftime('%H:%M:%S', time.gmtime(estimated_wall_clock_time))}")
+        print(f"Estimated total GA CPU time for {num_generations} generations: {time.strftime('%H:%M:%S', time.gmtime(estimated_total_cpu_time))}")
 
-    if results_exist:
-        print(f"Results for this parameter combination (alpha_v={args.alpha_v}, epsilon_v={args.epsilon_v}, zeta_H={args.zeta_H}, zeta_L={args.zeta_L}, beta_p={args.beta_p}, epsilon_p={args.epsilon_p}, zeta_p={args.zeta_p}, entropy_norm_min={args.entropy_norm_min}, pose_chi2_norm_min={args.pose_chi2_norm_min}, culled_norm_min={args.culled_norm_min}, w_thr={args.w_thr}, d_thr={args.d_thr}, activation=casef (s={args.s}), adaptive={args.adaptive}) already exist in '{summary_file}'.")
-        print("The software will not run.")
-        sys.exit(0) # Exit program
-    # --- End of CSV Check ---
+        ga_total_start_time = time.time()
+        generation_start_time = time.time()
+        ga_instance.run()
+        ga_total_duration = time.time() - ga_total_start_time
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=5) as executor:
-        futures = []
-        for seq in sequences:
-            fut = executor.submit(run_sequence, seq, config, summary_file)
-            futures.append(fut)
+        solution, solution_fitness, solution_idx = ga_instance.best_solution()
+        print(f"Finished GA Optimization in {ga_total_duration:.2f} seconds.")
+        print(f"Best solution found: {solution}")
+        print(f"Best fitness value: {solution_fitness:.4f}")
+        if solution_fitness > 1e-9:
+            best_rmse_pos = 1.0 / solution_fitness
+            print(f"Best Average RMSE (Position) over MH01-MH05: {best_rmse_pos:.4f} m")
+        else:
+            print("Best Average RMSE (Position) over MH01-MH05: Could not be determined (fitness is too low).")
+        
+        param_names = ["entropy_norm_min", "pose_chi2_norm_min", "culled_norm_min", "alpha_v", "epsilon_v", "zeta_H", "w_thr"]
+        print("Best parameters:")
+        for name, val in zip(param_names, solution):
+            print(f"  --{name} {val:.4f}")
+        
+        print("\nTo run with these optimal parameters (and other defaults):")
+        cmd_parts = [f'python "{os.path.basename(__file__)}"']
+        for name, val in zip(param_names, solution):
+            cmd_parts.append(f"--{name} {val:.4f}")
+        
+        cmd_parts.append(f"--beta_p {original_args_for_ga.beta_p}")
+        cmd_parts.append(f"--epsilon_p {original_args_for_ga.epsilon_p}")
+        cmd_parts.append(f"--zeta_p {original_args_for_ga.zeta_p}")
+        cmd_parts.append(f"--zeta_L {original_args_for_ga.zeta_L}") # Use original zeta_L
+        cmd_parts.append(f"--d_thr {original_args_for_ga.d_thr}")   # Use original d_thr
+        cmd_parts.append(f"--s {original_args_for_ga.s}")           # Use original s
+        cmd_parts.append(f"--zupt_acc_thr {original_args_for_ga.zupt_acc_thr}")
+        cmd_parts.append(f"--zupt_gyro_thr {original_args_for_ga.zupt_gyro_thr}")
+        cmd_parts.append(f"--zupt_win {original_args_for_ga.zupt_win}")
+        if original_args_for_ga.adaptive: # Should be true for GA
+             cmd_parts.append(f"--adaptive")
+        print(" ".join(cmd_parts))
 
-        concurrent.futures.wait(futures)
-
-    print("=== Processing of all sequences finished. ===")
+    else: # Normal run (not GA optimization)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=5) as executor:
+            futures = []
+            for seq in sequences:
+                fut = executor.submit(run_sequence, seq, config, summary_file)
+                futures.append(fut)
+            concurrent.futures.wait(futures)
+        print("=== Processing of all sequences finished. ===")
