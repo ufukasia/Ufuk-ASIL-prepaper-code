@@ -49,6 +49,7 @@ parser.add_argument("--zupt_win", type=int, default=60, help="Window size for ZU
 
 parser.add_argument("--optimize_ga", action="store_true", default=False, help="Enable Genetic Algorithm optimization for parameters")
 parser.add_argument("--ga_outer_workers", type=int, default=0, help="Number of outer parallel workers for GA (0 to auto-calculate based on CPU cores / 5, 1 for serial GA evaluations).")
+parser.add_argument("--filter_type", type=str, choices=["eskf", "sukf", "hybrid"], default="hybrid", help="Select filter type: eskf (classic error-state), sukf (scaled unscented), or hybrid (UKF for orientation, ESKF for others). Default: hybrid.")
 
 args = parser.parse_args()
 # Store the original args when the script starts, at module level.
@@ -1007,13 +1008,12 @@ def save_summary_to_csv(results, seq_name, args, filename):
 # =========================================================
 # ESKF-Based VIO Data Processing Function
 # =========================================================
-def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
+def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None, filter_type=None):
     # Read IMU data
     imu_data = pd.read_csv(imu_file)
     imu_data['timestamp'] = pd.to_datetime(imu_data['#timestamp [ns]'], unit='ns')
     imu_data['dt'] = imu_data['timestamp'].diff().dt.total_seconds()
     imu_data.loc[0, 'dt'] = 0.0
-
     needed_cols = [
         ' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []',
         ' v_RS_R_x [m s^-1]',' v_RS_R_y [m s^-1]',' v_RS_R_z [m s^-1]',
@@ -1023,8 +1023,6 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         'w_RS_S_x [rad s^-1]','w_RS_S_y [rad s^-1]','w_RS_S_z [rad s^-1]',
         'a_RS_S_x [m s^-2]','a_RS_S_y [m s^-2]','a_RS_S_z [m s^-2]'
     ]
-
-    
     for c in needed_cols:
         if c not in imu_data.columns:
             imu_data[c] = 0.0
@@ -1044,44 +1042,47 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
         initial_position = imu_data[[' p_RS_R_x [m]', ' p_RS_R_y [m]', ' p_RS_R_z [m]']].iloc[0].values
     else:
         initial_position = np.zeros(3)
-
-
     initial_gyro_bias = np.array([
         imu_data[' b_w_RS_S_x [rad s^-1]'].iloc[0],
         imu_data[' b_w_RS_S_y [rad s^-1]'].iloc[0],
         imu_data[' b_w_RS_S_z [rad s^-1]'].iloc[0]
     ]) if all(c in imu_data.columns for c in [' b_w_RS_S_x [rad s^-1]', ' b_w_RS_S_y [rad s^-1]', ' b_w_RS_S_z [rad s^-1]']) else np.zeros(3)
-
     initial_accel_bias = np.array([
         imu_data[' b_a_RS_S_x [m s^-2]'].iloc[0],
         imu_data[' b_a_RS_S_y [m s^-2]'].iloc[0],
         imu_data[' b_a_RS_S_z [m s^-2]'].iloc[0]
     ]) if all(c in imu_data.columns for c in [' b_a_RS_S_x [m s^-2]', ' b_a_RS_S_y [m s^-2]', ' b_a_RS_S_z [m s^-2]']) else np.zeros(3)
-    
-    # --- Instantiate the Hybrid version ---
-    eskf = ErrorStateKalmanFilterVIO_Hybrid(initial_quaternion, initial_velocity, initial_position,
-                                            initial_accel_bias=initial_accel_bias,
-                                            initial_gyro_bias=initial_gyro_bias)
-
+    # --- Select filter type ---
+    if filter_type is None:
+        filter_type = getattr(args, 'filter_type', 'hybrid')
+    if filter_type == 'eskf':
+        filter_obj = ErrorStateKalmanFilterVIO(initial_quaternion, initial_velocity, initial_position,
+                                               initial_accel_bias=initial_accel_bias,
+                                               initial_gyro_bias=initial_gyro_bias)
+    elif filter_type == 'sukf':
+        filter_obj = ErrorStateKalmanFilterVIO_UKF(initial_quaternion, initial_velocity, initial_position,
+                                                  initial_accel_bias=initial_accel_bias,
+                                                  initial_gyro_bias=initial_gyro_bias)
+    else:
+        filter_obj = ErrorStateKalmanFilterVIO_Hybrid(initial_quaternion, initial_velocity, initial_position,
+                                                     initial_accel_bias=initial_accel_bias,
+                                                     initial_gyro_bias=initial_gyro_bias)
     visual_index = 0
     max_visual_index = len(visual_data)
     prev_vis_time = None
     prev_vis_pos = None
-
     estimated_quaternions = []
     estimated_velocities = []
     estimated_positions = []
     estimated_accel_biases = []
     estimated_gyro_biases = []
     timestamps = []
-
     true_quaternions = [] # Ground truth
     true_velocities = []
     true_positions = []
     true_accel_biases = []
     true_gyro_biases = []
     q_prev = initial_quaternion.copy()
-
     # --- ZUPT settings ---
     WIN_LEN_STATIC  = args.zupt_win          
     ACC_STD_THR     = args.zupt_acc_thr      
@@ -1089,11 +1090,9 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     accel_window = deque(maxlen=WIN_LEN_STATIC)
     gyro_window  = deque(maxlen=WIN_LEN_STATIC) 
     total_static_duration = 0.0      
-
     for i, row in imu_data.iterrows():
         dt = row['dt']
         if dt <= 0: continue # Skip if delta time is not valid
-        
         gyro_raw = np.array([
             row['w_RS_S_x [rad s^-1]'],
             row['w_RS_S_y [rad s^-1]'],
@@ -1104,51 +1103,46 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             row['a_RS_S_y [m s^-2]'],
             row['a_RS_S_z [m s^-2]']
         ], dtype=float)
-        
-        # Prediction step (with raw data) - Calls the predict method of the instantiated filter (Hybrid in this case)
-        eskf.predict(gyro_raw, accel_raw, dt)
+        # Prediction step (with raw data)
+        filter_obj.predict(gyro_raw, accel_raw, dt)
         current_time = row['timestamp']
-
         # --- Static detection & ZUPT / Gravity update ---
         accel_window.append(accel_raw)
         gyro_window.append(gyro_raw)
-
         if len(accel_window) == WIN_LEN_STATIC:
-            # Calculate standard deviation of acceleration norm
             accel_data_stack = np.vstack(accel_window)
             acc_norm = np.linalg.norm(accel_data_stack, axis=1)
             acc_norm_std = acc_norm.std()
-
-            # Calculate standard deviation of gyroscope norm
             gyro_data_stack = np.vstack(gyro_window)
             g_norm   = np.linalg.norm(gyro_data_stack, axis=1)
             gyro_norm_std = g_norm.std()
-
             if (acc_norm_std < ACC_STD_THR) and (gyro_norm_std < GYRO_STD_THR):
-                eskf.zero_velocity_update()
-                eskf.gravity_update(accel_raw) 
-                window_duration = WIN_LEN_STATIC * dt # Approximate window duration
+                # ZUPT and gravity update method selection
+                if filter_type == 'eskf':
+                    filter_obj.zero_velocity_update()
+                    filter_obj.gravity_update(accel_raw)
+                elif filter_type == 'sukf':
+                    filter_obj.zero_velocity_update()
+                    filter_obj.gravity_update(accel_raw)
+                else: # hybrid
+                    filter_obj.zero_velocity_update()
+                    filter_obj.gravity_update(accel_raw)
+                window_duration = WIN_LEN_STATIC * dt
                 total_static_duration += window_duration
-                # Clear windows after ZUPT/Gravity update to detect next static period
                 accel_window.clear()
                 gyro_window.clear()
-        
         # Visual measurement update (if available and timestamp matches)
         while (visual_index < max_visual_index and
                (visual_data.loc[visual_index, 'timestamp'] <= current_time)):
-
             p_meas = np.array([
                 visual_data.loc[visual_index, ' p_RS_R_x [m]'],
                 visual_data.loc[visual_index, ' p_RS_R_y [m]'],
                 visual_data.loc[visual_index, ' p_RS_R_z [m]']
             ], dtype=float)
-
             t_vis = visual_data.loc[visual_index, 'timestamp']
             t_vis_ns = t_vis.value
-
             fixed_sigma_v = None
             sigma_p_val = None
-
             if sigma_v_map and len(sigma_v_map) > 0:
                 if t_vis_ns in sigma_v_map:
                     fixed_sigma_v = sigma_v_map[t_vis_ns]
@@ -1160,9 +1154,8 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                         if diff < min_diff:
                             min_diff = diff
                             chosen_key = k
-                    if chosen_key is not None and min_diff < 2e6: # (2ms tolerance)
+                    if chosen_key is not None and min_diff < 2e6:
                         fixed_sigma_v = sigma_v_map[chosen_key]
-
             if sigma_p_map and len(sigma_p_map) > 0:
                 if t_vis_ns in sigma_p_map:
                     sigma_p_val = sigma_p_map[t_vis_ns]
@@ -1174,81 +1167,68 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
                         if diff < min_diff:
                             min_diff = diff
                             chosen_key = k
-                    if chosen_key is not None and min_diff < 2e6: # (2ms tolerance)
+                    if chosen_key is not None and min_diff < 2e6:
                         sigma_p_val = sigma_p_map[chosen_key]
-
-            # --- Logic for calculating velocity from consecutive positions for visual velocity measurement ---
-            v_meas_to_use = eskf.v # Default to current filter velocity (for an ineffective update if dt_vis is too small)
+            v_meas_to_use = filter_obj.v
             dt_vis = 0.0
             if prev_vis_time is not None and prev_vis_pos is not None:
                 dt_vis = (t_vis - prev_vis_time).total_seconds()
-                if dt_vis > 1e-9: # Avoid very small dt
+                if dt_vis > 1e-9:
                     v_meas_to_use = (p_meas - prev_vis_pos) / dt_vis
-
             I3 = np.eye(3)
-            current_sigma_p_sq = eskf.R_vis_6d[0,0] # Default sigma_p squared
-            current_sigma_v_sq = eskf.R_vis_6d[3,3] # Default sigma_v squared
-
+            current_sigma_p_sq = filter_obj.R_vis_6d[0,0]
+            current_sigma_v_sq = filter_obj.R_vis_6d[3,3]
             if sigma_p_val is not None:
                 current_sigma_p_sq = sigma_p_val**2
-            if fixed_sigma_v is not None: # fixed_sigma_v is obtained from sigma_v_map
+            if fixed_sigma_v is not None:
                 current_sigma_v_sq = fixed_sigma_v**2
-
-
             R_vision_current = np.block([
                 [current_sigma_p_sq * I3, np.zeros((3,3))],
                 [np.zeros((3,3)), current_sigma_v_sq * I3]
             ])
-
-            eskf.vision_posvel_update(p_meas, v_meas_to_use, R_vision_current)
-
+            # Visual update method selection
+            if filter_type == 'eskf':
+                filter_obj.vision_posvel_update(p_meas, v_meas_to_use, R_vision_current)
+            elif filter_type == 'sukf':
+                filter_obj.ukf_update_posvel(np.concatenate([p_meas, v_meas_to_use]), R_vision_current)
+            else: # hybrid
+                filter_obj.vision_posvel_update(p_meas, v_meas_to_use, R_vision_current)
             prev_vis_pos = p_meas
             prev_vis_time = t_vis
             visual_index += 1
-
-        q_est = ensure_quaternion_continuity(eskf.q, q_prev)
+        q_est = ensure_quaternion_continuity(filter_obj.q, q_prev)
         estimated_quaternions.append(q_est)
-        estimated_velocities.append(eskf.v.copy())
-        estimated_positions.append(eskf.p.copy())
-        estimated_accel_biases.append(eskf.b_a.copy()) 
-        estimated_gyro_biases.append(eskf.b_g.copy())  
+        estimated_velocities.append(filter_obj.v.copy())
+        estimated_positions.append(filter_obj.p.copy())
+        estimated_accel_biases.append(filter_obj.b_a.copy()) 
+        estimated_gyro_biases.append(filter_obj.b_g.copy())  
         timestamps.append(row['timestamp'].value)
-
         q_prev = q_est
-
         if all(col in imu_data.columns for col in [' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []']):
             q_gt = row[[' q_RS_w []',' q_RS_x []',' q_RS_y []',' q_RS_z []']].values
         else:
             q_gt = np.array([np.nan]*4)
-
         if all(col in imu_data.columns for col in [' v_RS_R_x [m s^-1]',' v_RS_R_y [m s^-1]',' v_RS_R_z [m s^-1]']):
             v_gt = row[[' v_RS_R_x [m s^-1]',' v_RS_R_y [m s^-1]',' v_RS_R_z [m s^-1]']].values
         else:
             v_gt = np.array([np.nan]*3)
-
         if all(col in imu_data.columns for col in [' p_RS_R_x [m]',' p_RS_R_y [m]',' p_RS_R_z [m]']):
             p_gt = row[[' p_RS_R_x [m]', ' p_RS_R_y [m]', ' p_RS_R_z [m]']].values
         else:
             p_gt = np.array([np.nan]*3)
-
-        # Accel Bias
         if all(c in imu_data.columns for c in [' b_a_RS_S_x [m s^-2]', ' b_a_RS_S_y [m s^-2]', ' b_a_RS_S_z [m s^-2]']):
             ba_gt = row[[' b_a_RS_S_x [m s^-2]', ' b_a_RS_S_y [m s^-2]', ' b_a_RS_S_z [m s^-2]']].values
         else:
             ba_gt = np.array([np.nan]*3)
-
-        # Gyro Bias
         if all(c in imu_data.columns for c in [' b_w_RS_S_x [rad s^-1]', ' b_w_RS_S_y [rad s^-1]', ' b_w_RS_S_z [rad s^-1]']):
             bg_gt = row[[' b_w_RS_S_x [rad s^-1]', ' b_w_RS_S_y [rad s^-1]', ' b_w_RS_S_z [rad s^-1]']].values
         else:
             bg_gt = np.array([np.nan]*3)
-
         true_quaternions.append(q_gt)
         true_velocities.append(v_gt)
         true_positions.append(p_gt)
         true_accel_biases.append(ba_gt) 
         true_gyro_biases.append(bg_gt)  
-
     # --- Convert results to NumPy arrays ---
     estimated_quaternions = np.array(estimated_quaternions, dtype=float)
     estimated_velocities = np.array(estimated_velocities, dtype=float)
@@ -1256,19 +1236,15 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     estimated_accel_biases = np.array(estimated_accel_biases, dtype=float)
     estimated_gyro_biases = np.array(estimated_gyro_biases, dtype=float)
     timestamps_ns = np.array(timestamps, dtype='int64')
-
     true_quaternions = np.array(true_quaternions, dtype=float)
     true_velocities = np.array(true_velocities, dtype=float)
     true_positions = np.array(true_positions, dtype=float)
     true_accel_biases = np.array(true_accel_biases, dtype=float)
     true_gyro_biases = np.array(true_gyro_biases, dtype=float)
-
     # --- RMSE Calculations ---
     estimated_euler_raw = np.array([quaternion_to_euler(q) for q in estimated_quaternions])
     valid_true_q_indices_for_euler = ~np.isnan(true_quaternions).any(axis=1)
     true_euler_raw = np.array([quaternion_to_euler(q) for q in true_quaternions[valid_true_q_indices_for_euler] if not np.isnan(q).any()])
-
-
     min_len = min(len(estimated_quaternions), len(true_quaternions))
     rmse_quat_angular_deg = None 
     rmse_euler_deg = None        
@@ -1278,7 +1254,6 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
     rmse_bg = None
     estimated_euler_deg = estimated_euler_raw 
     true_euler_deg = true_euler_raw
-
     if min_len > 0:
         valid_gt_indices = np.where(
             ~np.isnan(true_quaternions[:min_len]).any(axis=1) &
@@ -1287,7 +1262,6 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             ~np.isnan(true_accel_biases[:min_len]).any(axis=1) &
             ~np.isnan(true_gyro_biases[:min_len]).any(axis=1)
         )[0]
-
         if len(valid_gt_indices) > 0:
             min_len_valid = len(valid_gt_indices)
             est_q_valid = estimated_quaternions[valid_gt_indices]
@@ -1300,52 +1274,31 @@ def process_vio_data(imu_file, visual_file, sigma_v_map=None, sigma_p_map=None):
             true_ba_valid = true_accel_biases[valid_gt_indices]
             est_bg_valid = estimated_gyro_biases[valid_gt_indices]
             true_bg_valid = true_gyro_biases[valid_gt_indices]
-
-            # Quaternion Angular RMSE (adapted from plots.py and in degrees)
             aligned_quaternions_for_angular_rmse = align_quaternions(est_q_valid, true_q_valid)
-            
             delta_q_array = [quaternion_multiply(qe, quaternion_conjugate(qg)) 
                              for qg, qe in zip(true_q_valid, aligned_quaternions_for_angular_rmse)]
-            
             angles_rad_list = []
             for delta_q_val in delta_q_array:
-                # Absolute value of w component is clipped to ensure valid acos input
                 cos_half_angle = np.clip(abs(delta_q_val[0]), -1.0, 1.0) 
                 angle_rad = 2 * np.arccos(cos_half_angle)
                 angles_rad_list.append(angle_rad)
-            
             angles_deg_array = np.array(angles_rad_list) * 180.0 / np.pi
-            # RMSE of angular errors (direct root mean square, as target error is 0 degrees)
             rmse_quat_angular_deg = np.sqrt(np.mean(angles_deg_array**2))
-
             est_euler_deg_valid = np.array([quaternion_to_euler(q) for q in aligned_quaternions_for_angular_rmse])
             true_euler_deg_valid = np.array([quaternion_to_euler(q) for q in true_q_valid])
-
-            # Ensure angle continuity (unwrap)
-            est_euler_deg_valid_unwrapped = ensure_angle_continuity(est_euler_deg_valid, threshold=180) # (degrees)
+            est_euler_deg_valid_unwrapped = ensure_angle_continuity(est_euler_deg_valid, threshold=180)
             true_euler_deg_valid_unwrapped = ensure_angle_continuity(true_euler_deg_valid, threshold=180)
-            estimated_euler_deg = est_euler_deg_valid_unwrapped # Store for results
-            true_euler_deg = true_euler_deg_valid_unwrapped     # Store for results
+            estimated_euler_deg = est_euler_deg_valid_unwrapped
+            true_euler_deg = true_euler_deg_valid_unwrapped
             rmse_euler_deg = calculate_angle_rmse(est_euler_deg_valid_unwrapped, true_euler_deg_valid_unwrapped)
-
-
-            # Velocity RMSE
             diff_v = est_v_valid - true_v_valid
             rmse_vel = np.sqrt((diff_v**2).mean(axis=0))
-
-            # Position RMSE
             diff_p = est_p_valid - true_p_valid
             rmse_pos = np.sqrt((diff_p**2).mean(axis=0))
-
-            # Accel Bias RMSE
             diff_ba = est_ba_valid - true_ba_valid
             rmse_ba = np.sqrt((diff_ba**2).mean(axis=0))
-
-            # Gyro Bias RMSE
             diff_bg = est_bg_valid - true_bg_valid
             rmse_bg = np.sqrt((diff_bg**2).mean(axis=0))
-
-    # --- Collect Results in Dictionary ---
     results = {
         "timestamps": timestamps_ns,
         "estimated_quaternions": estimated_quaternions,
@@ -1375,21 +1328,18 @@ def run_sequence(seq_name, config, summary_file):
     imu_file_path = f"imu_interp_gt/{seq_name}_imu_with_interpolated_groundtruth.csv"
     sequence_number_str = seq_name[2:]  # Example: MH01 -> "01"    
     visual_file_path = f"VO/mh{int(sequence_number_str)}_ns.csv"    
-
     if args.adaptive:
         sigma_v_map = compute_adaptive_sigma_v(config, visual_file_path, seq_name)
         sigma_p_map = compute_adaptive_sigma_p(config, visual_file_path, seq_name)
     else:
         sigma_v_map = {}
         sigma_p_map = {}
-
     print(f"[{seq_name}] Starting...")
     start_time = time.time()
-    results = process_vio_data(imu_file_path, visual_file_path, sigma_v_map, sigma_p_map)
+    results = process_vio_data(imu_file_path, visual_file_path, sigma_v_map, sigma_p_map, filter_type=args.filter_type)
     if results is None:
         print(f"[{seq_name}] Could not be processed due to an error.")
         return 
-
     print(f"[{seq_name}] === RMSE Results ===")
     print("Quaternion Angular RMSE (degrees):", results["rmse_quat_angular_deg"]) 
     print("Euler Angle RMSE (degrees):", results["rmse_euler_deg"]) 
@@ -1402,14 +1352,10 @@ def run_sequence(seq_name, config, summary_file):
         print("Gyro Bias RMSE (rad/s):", results["rmse_bg"])
     if "total_static_duration" in results:
         print(f"Total Static Duration (Gravity Update Active): {results['total_static_duration']:.4f} s")
-
-
     detailed_csv = f"outputs/adaptive_{seq_name.lower()}.csv"
     save_results_to_csv(results, filename=detailed_csv)
-
     if SAVE_RESULTS_CSV:
         save_summary_to_csv(results, seq_name, args, filename=summary_file)
-
     end_time = time.time()
     print(f"[{seq_name}] Total Execution Time: {end_time - start_time:.4f} s")
 
@@ -1438,7 +1384,7 @@ def evaluate_single_sequence_for_ga(seq_name_ga, current_solution_config, curren
     temp_args_for_process = copy.deepcopy(current_args_for_process) # Already a deepcopy
 
 
-    results_seq = process_vio_data(imu_file_path_ga, visual_file_path_ga, sigma_v_map_ga_seq, sigma_p_map_ga_seq)
+    results_seq = process_vio_data(imu_file_path_ga, visual_file_path_ga, sigma_v_map_ga_seq, sigma_p_map_ga_seq, filter_type=getattr(temp_args_for_process, 'filter_type', 'hybrid'))
 
     if results_seq is None or results_seq["rmse_pos"] is None:
         return float('inf') # Return a high RMSE for failed runs
