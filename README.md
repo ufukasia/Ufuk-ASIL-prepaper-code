@@ -1,9 +1,3 @@
-Elbette, README dosyanız için BibTeX formatında bir alıntı bölümü aşağıda oluşturulmuştur. Bu bölüm, projenizin akademik bağlamını güçlendirir ve başkalarının çalışmanızı doğru bir şekilde referans göstermesini sağlar.
-
-Yeni bölümü, "İletişim" (Contact) başlığından hemen önce ekleyerek mevcut yapıyı korudum.
-
----
-
 # Loosely Coupled Adaptive Hybrid ESKF/UKF for Visual-Inertial Odometry (VIO)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
