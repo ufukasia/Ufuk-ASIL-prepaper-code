@@ -1,3 +1,9 @@
+Elbette, README dosyanız için BibTeX formatında bir alıntı bölümü aşağıda oluşturulmuştur. Bu bölüm, projenizin akademik bağlamını güçlendirir ve başkalarının çalışmanızı doğru bir şekilde referans göstermesini sağlar.
+
+Yeni bölümü, "İletişim" (Contact) başlığından hemen önce ekleyerek mevcut yapıyı korudum.
+
+---
+
 # Loosely Coupled Adaptive Hybrid ESKF/UKF for Visual-Inertial Odometry (VIO)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -107,6 +113,25 @@ python main_qf-es-ekf-ukf.py --adaptive \
 ## 📄 Outputs
 - **Trajectory Files**: `outputs/adaptive_sigma_*.csv`
 - **Result Metrics**: `results.csv`
+
+## 📜 Citation
+If you use this work in your research, please consider citing the following paper:
+```bibtex
+@article{Asil2025,
+  author    = {Asil, Ufuk and Nasibov, Efendi},
+  year      = {2025},
+  month     = {08},
+  title     = {Adaptive Covariance and Quaternion-Focused Hybrid Error-State EKF/UKF for Visual-Inertial Odometry},
+  journal   = {International Journal of Computational Intelligence Systems},
+  volume    = {18},
+  number    = {1},
+  pages     = {206},
+  issn      = {1875-6883},
+  doi       = {10.1007/s44196-025-00942-0},
+  url       = {https://doi.org/10.1007/s44196-025-00942-0},
+  abstract  = {This study presents an innovative hybrid Visual-Inertial Odometry (VIO) method for Unmanned Aerial Vehicles (UAVs) that is resilient to environmental challenges and capable of dynamically assessing sensor reliability. Built upon a loosely coupled sensor fusion architecture, the system utilizes a novel hybrid Quaternion-focused Error-State EKF/UKF (Qf-ES-EKF/UKF) architecture to process inertial measurement unit (IMU) data. This architecture first propagates the entire state using an Error-State Extended Kalman Filter (ESKF) and then applies a targeted Scaled Unscented Kalman Filter (SUKF) step to refine only the orientation. This sequential process blends the accuracy of SUKF in quaternion estimation with the overall computational efficiency of ESKF. The reliability of visual measurements is assessed via a dynamic sensor confidence score based on metrics, such as image entropy, intensity variation, motion blur, and inference quality, adapting the measurement noise covariance to ensure stable pose estimation even under challenging conditions. Comprehensive experimental analyses on the EuRoC MAV dataset demonstrate key advantages: an average improvement of 49% in position accuracy in challenging scenarios, an average of 57% in rotation accuracy over ESKF-based methods, and SUKF-comparable accuracy achieved with approximately 48% lower computational cost than a full SUKF implementation. These findings demonstrate that the presented approach strikes an effective balance between computational efficiency and estimation accuracy, and significantly enhances UAV pose estimation performance in complex environments with varying sensor reliability.}
+}
+```
 
 ## 📧 Contact
 - Ufuk Asil - [u.asil@ogr.deu.edu.tr](mailto:u.asil@ogr.deu.edu.tr)
